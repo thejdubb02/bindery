@@ -54,8 +54,9 @@ func NewSearcher() *Searcher {
 // rejected. MediaType filters the indexer category set; "audiobook" narrows
 // to the Newznab audiobook subcategory (303x, primarily 3030), anything else
 // narrows to the ebook subcategory (702x, primarily 7020). The broad parent
-// categories 7000 and 3000 are never sent — they cause indexers to return
-// noisier, less-targeted result sets.
+// categories 7000 and 3000 are only sent for indexers that explicitly opt in
+// (Indexer.IncludeParentCategories); they can find releases missed by an
+// incomplete category mapping but are often noisy.
 // AllowedLanguages is the author's metadata-profile language list; callers
 // apply it to results via FilterByAllowedLanguages (releases tagged with a
 // language outside the set are dropped). Recorded here so search debug
@@ -149,12 +150,13 @@ func (s *Searcher) makeClient(baseURL, apiKey string) *newznab.Client {
 // match exists. Substituting a standard fallback ID (3030, 7020) on such
 // indexers returns unrelated results because the standard IDs do not cover
 // the indexer's extended subcategory tree.
-func filterCategoriesForMedia(cats []int, mediaType string) []int {
+func filterCategoriesForMedia(cats []int, mediaType string, includeParentCategories bool) []int {
 	// Newznab category convention: 7xxx is the Books parent (7020 ebook,
 	// 7030 magazines), 3xxx is Audio (3030 audiobook). The bare parents
-	// (7000 / 3000) are deliberately dropped: Prowlarr reports them for
-	// generic book trackers and sending them as-is returns the entire
-	// books or audio surface, which is noise.
+	// (7000 / 3000) are dropped by default: Prowlarr reports them for generic
+	// trackers and sending them as-is returns the entire books or audio surface.
+	// A per-indexer opt-in lets those parents pass when an indexer's mapping is
+	// incomplete; it never synthesizes a parent that was not configured.
 	//
 	// Beyond that, every non-parent subcategory in the matching bucket is
 	// trusted: the user explicitly added it to the indexer's category list
@@ -179,7 +181,7 @@ func filterCategoriesForMedia(cats []int, mediaType string) []int {
 	var out []int
 	hasNonStandard := false
 	for _, c := range cats {
-		if c/1000 == wantThousand && c != parent {
+		if c/1000 == wantThousand && (c != parent || includeParentCategories) {
 			out = append(out, c)
 		}
 		if c > 9999 {
@@ -221,7 +223,7 @@ func (s *Searcher) SearchBook(ctx context.Context, indexers []models.Indexer, c 
 			defer wg.Done()
 
 			client := s.makeClient(idx.URL, idx.APIKey)
-			cats := filterCategoriesForMedia(idx.Categories, c.MediaType)
+			cats := filterCategoriesForMedia(idx.Categories, c.MediaType, idx.IncludeParentCategories)
 			hits, err := client.BookSearch(ctx, c.Title, c.Author, cats)
 			if err != nil {
 				slog.Warn("indexer search failed", "indexer", idx.Name, "error", err)
@@ -255,6 +257,10 @@ func (s *Searcher) SearchBook(ctx context.Context, indexers []models.Indexer, c 
 }
 
 // SearchQuery performs a generic text search across all enabled indexers.
+//
+// The per-indexer parent-category opt-in does not apply here: it selects a
+// parent from the requested media type, and a freeform query has none.
+// Configured categories are sent as-is.
 //
 // The content guards SearchBook applies are applied here too: some indexers
 // ignore category filters on q= searches and return movies and raw per-article

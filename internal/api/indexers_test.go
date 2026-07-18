@@ -94,7 +94,7 @@ func TestIndexerCRUD(t *testing.T) {
 	h := indexerFixture(t)
 
 	// Create
-	body := `{"name":"NZBGeek","url":"https://api.nzbgeek.info","apiKey":"testkey","type":"newznab"}`
+	body := `{"name":"NZBGeek","url":"https://api.nzbgeek.info","apiKey":"testkey","type":"newznab","includeParentCategories":true}`
 	rec := httptest.NewRecorder()
 	h.Create(rec, httptest.NewRequest(http.MethodPost, "/indexer", bytes.NewBufferString(body)))
 	if rec.Code != http.StatusCreated {
@@ -108,6 +108,9 @@ func TestIndexerCRUD(t *testing.T) {
 	// Default categories should be set
 	if len(created.Categories) == 0 {
 		t.Error("expected default categories to be populated")
+	}
+	if !created.IncludeParentCategories {
+		t.Error("expected includeParentCategories to round-trip on create")
 	}
 
 	// List
@@ -139,6 +142,13 @@ func TestIndexerCRUD(t *testing.T) {
 	h.Update(rec, withURLParam(httptest.NewRequest(http.MethodPut, "/indexer/1", bytes.NewBufferString(update)), "id", "1"))
 	if rec.Code != http.StatusOK {
 		t.Errorf("update: expected 200, got %d", rec.Code)
+	}
+	var updated models.Indexer
+	if err := json.NewDecoder(rec.Body).Decode(&updated); err != nil {
+		t.Fatalf("decode update: %v", err)
+	}
+	if !updated.IncludeParentCategories {
+		t.Error("legacy update without includeParentCategories should preserve the stored value")
 	}
 
 	// Update — not found
