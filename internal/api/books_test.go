@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -1151,5 +1152,143 @@ func TestParseMonitoredParam(t *testing.T) {
 		if got := parseMonitoredParam(v); got != nil {
 			t.Errorf("parseMonitoredParam(%q) = %v, want nil (no filter)", v, *got)
 		}
+	}
+}
+
+// TestBookDeleteFile_DeregisterByPath covers #1692: dropping ONE stale
+// book_files row from a book that still has a valid file, with no on-disk
+// delete.
+//
+// The reported case: re-filing books into a new ABS library appended a row for
+// the new path without removing the old one, so ~130 books carried dead rows
+// and their derived ebookFilePath surfaced a file that no longer existed. The
+// format-scoped delete could not fix it — it runs the on-disk delete for every
+// path of that format, which would have destroyed the valid new file — and a
+// library scan skips any book that still resolves at least one path.
+func TestBookDeleteFile_DeregisterByPath(t *testing.T) {
+	h, books, _, author, ctx := bookFixture(t)
+
+	dir := t.TempDir()
+	stale := filepath.Join(dir, "Old Genre", "Book.epub")
+	current := filepath.Join(dir, "New Genre", "Book.epub")
+	if err := os.MkdirAll(filepath.Dir(current), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(current, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	book := &models.Book{
+		ForeignID: "B-DEREG", AuthorID: author.ID, Title: "T", SortTitle: "t",
+		Status: "imported", Genres: []string{},
+		MetadataProvider: "openlibrary", Monitored: true,
+	}
+	if err := books.Create(ctx, book); err != nil {
+		t.Fatal(err)
+	}
+	// Both rows tracked, exactly as an ABS re-import leaves them.
+	if err := books.AddBookFile(ctx, book.ID, models.MediaTypeEbook, stale); err != nil {
+		t.Fatal(err)
+	}
+	if err := books.AddBookFile(ctx, book.ID, models.MediaTypeEbook, current); err != nil {
+		t.Fatal(err)
+	}
+
+	req := withURLParam(httptest.NewRequest(http.MethodDelete,
+		"/api/v1/book/"+strconv.FormatInt(book.ID, 10)+"/file?path="+url.QueryEscape(stale), nil),
+		"id", strconv.FormatInt(book.ID, 10))
+	rec := httptest.NewRecorder()
+	h.DeleteFile(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// The valid file must survive — this is the whole point of the mode.
+	if _, err := os.Stat(current); err != nil {
+		t.Errorf("the valid file must not be touched, stat err=%v", err)
+	}
+	files, err := books.ListFiles(ctx, book.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("expected 1 remaining book_files row, got %d: %+v", len(files), files)
+	}
+	if files[0].Path != current {
+		t.Errorf("remaining row = %q, want the current path %q", files[0].Path, current)
+	}
+	got, _ := books.GetByID(ctx, book.ID)
+	if got.Status != "imported" {
+		t.Errorf("book still owns a file, status should stay imported, got %q", got.Status)
+	}
+}
+
+// TestBookDeleteFile_DeregisterUntrackedPath is the membership guard: a caller
+// can only deregister a row that is actually tracked against this book, so the
+// mode cannot be used to detach rows from a book the caller does not own.
+func TestBookDeleteFile_DeregisterUntrackedPath(t *testing.T) {
+	h, books, _, author, ctx := bookFixture(t)
+	book := &models.Book{
+		ForeignID: "B-UNTRACKED", AuthorID: author.ID, Title: "T", SortTitle: "t",
+		Status: "imported", Genres: []string{},
+		MetadataProvider: "openlibrary", Monitored: true,
+	}
+	if err := books.Create(ctx, book); err != nil {
+		t.Fatal(err)
+	}
+	if err := books.AddBookFile(ctx, book.ID, models.MediaTypeEbook, filepath.Join(t.TempDir(), "Mine.epub")); err != nil {
+		t.Fatal(err)
+	}
+
+	req := withURLParam(httptest.NewRequest(http.MethodDelete,
+		"/api/v1/book/"+strconv.FormatInt(book.ID, 10)+"/file?path=%2Fsomewhere%2FElse.epub", nil),
+		"id", strconv.FormatInt(book.ID, 10))
+	rec := httptest.NewRecorder()
+	h.DeleteFile(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for an untracked path, got %d: %s", rec.Code, rec.Body.String())
+	}
+	files, _ := books.ListFiles(ctx, book.ID)
+	if len(files) != 1 {
+		t.Errorf("the book's own row must be untouched, got %d rows", len(files))
+	}
+}
+
+// TestBookDeleteFile_DeregisterLastFileFlipsToWanted pins the aggregate-status
+// refresh: deregistering the only remaining row leaves the book owning nothing,
+// so it goes back to wanted even though nothing was deleted from disk.
+func TestBookDeleteFile_DeregisterLastFileFlipsToWanted(t *testing.T) {
+	h, books, _, author, ctx := bookFixture(t)
+
+	path := filepath.Join(t.TempDir(), "Only.epub")
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	book := &models.Book{
+		ForeignID: "B-LAST", AuthorID: author.ID, Title: "T", SortTitle: "t",
+		Status: "imported", Genres: []string{},
+		MetadataProvider: "openlibrary", Monitored: true,
+	}
+	if err := books.Create(ctx, book); err != nil {
+		t.Fatal(err)
+	}
+	if err := books.AddBookFile(ctx, book.ID, models.MediaTypeEbook, path); err != nil {
+		t.Fatal(err)
+	}
+
+	req := withURLParam(httptest.NewRequest(http.MethodDelete,
+		"/api/v1/book/"+strconv.FormatInt(book.ID, 10)+"/file?path="+url.QueryEscape(path), nil),
+		"id", strconv.FormatInt(book.ID, 10))
+	rec := httptest.NewRecorder()
+	h.DeleteFile(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("deregister must never touch the filesystem, stat err=%v", err)
+	}
+	got, _ := books.GetByID(ctx, book.ID)
+	if got.Status != models.BookStatusWanted {
+		t.Errorf("status should flip to wanted with no files left, got %q", got.Status)
 	}
 }
