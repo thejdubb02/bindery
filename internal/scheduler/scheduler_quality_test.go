@@ -77,15 +77,17 @@ func qualityFixture(t *testing.T, attachProfile bool, items []models.QualityItem
 
 	ss := &fixedResultsSearcher{results: results}
 	s := &Scheduler{
-		searcher:        ss,
-		indexers:        indexers,
-		authors:         authors,
-		settings:        db.NewSettingsRepo(database),
-		blocklist:       db.NewBlocklistRepo(database),
-		downloads:       downloads,
-		clients:         clients,
-		qualityProfiles: qualityProfiles,
+		searcher:  ss,
+		indexers:  indexers,
+		authors:   authors,
+		settings:  db.NewSettingsRepo(database),
+		blocklist: db.NewBlocklistRepo(database),
+		downloads: downloads,
+		clients:   clients,
 	}
+	// Attach through the same setter main.go uses, so the wiring is exercised
+	// rather than bypassed by poking the field.
+	s.WithQualityProfiles(qualityProfiles)
 	return s, downloads, book
 }
 
