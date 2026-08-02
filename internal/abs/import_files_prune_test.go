@@ -152,3 +152,41 @@ func TestPruneVanishedFormatPaths_KeepPathNeverPruned(t *testing.T) {
 		t.Errorf("the freshly written row must never be pruned, got %d rows: %+v", len(files), files)
 	}
 }
+
+// TestPruneVanishedFormatPaths_NonENOENTStatErrorKeepsRow is the guard that
+// makes this safe to run on every import.
+//
+// "The file is missing" is not the same as "the file is gone". A stalled or
+// unmounted network share, a permission change, or an I/O error all make paths
+// unreadable en masse, and pruning on any of those would clear a library's file
+// rows wholesale. Only a definite ENOENT prunes.
+//
+// The unreadable path here has a regular file as its parent directory, so the
+// stat fails with ENOTDIR — an error that is emphatically not os.IsNotExist,
+// without needing root or a real mount to reproduce.
+func TestPruneVanishedFormatPaths_NonENOENTStatErrorKeepsRow(t *testing.T) {
+	dir := t.TempDir()
+	current := filepath.Join(dir, "Current.epub")
+	if err := os.WriteFile(current, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	notADir := filepath.Join(dir, "notadir")
+	if err := os.WriteFile(notADir, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unreadable := filepath.Join(notADir, "Book.epub")
+	if _, err := os.Stat(unreadable); os.IsNotExist(err) {
+		t.Fatalf("precondition: stat should fail with something other than ENOENT, got %v", err)
+	}
+
+	importer, bookID, list := pruneFixture(t,
+		[2]string{models.MediaTypeEbook, unreadable},
+		[2]string{models.MediaTypeEbook, current},
+	)
+	importer.pruneVanishedFormatPaths(context.Background(), bookID, models.MediaTypeEbook, current)
+
+	files := list()
+	if len(files) != 2 {
+		t.Fatalf("a non-ENOENT stat error must leave the row alone, got %d rows: %+v", len(files), files)
+	}
+}

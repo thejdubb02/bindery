@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -1290,5 +1291,107 @@ func TestBookDeleteFile_DeregisterLastFileFlipsToWanted(t *testing.T) {
 	got, _ := books.GetByID(ctx, book.ID)
 	if got.Status != models.BookStatusWanted {
 		t.Errorf("status should flip to wanted with no files left, got %q", got.Status)
+	}
+}
+
+// TestBookDeleteFile_DeregisterRecordsHistory pins that a deregister is
+// distinguishable from a real delete in history. Both write the same event
+// type, so the `deregistered` flag in the payload is the only thing telling an
+// operator that nothing was removed from disk.
+func TestBookDeleteFile_DeregisterRecordsHistory(t *testing.T) {
+	database, err := db.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	books := db.NewBookRepo(database)
+	authors := db.NewAuthorRepo(database)
+	history := db.NewHistoryRepo(database)
+	h := NewBookHandler(books, nil, history, nil)
+	ctx := context.Background()
+	author := &models.Author{
+		ForeignID: "OL-HIST-A", Name: "Test Author", SortName: "Author, Test",
+		MetadataProvider: "openlibrary", Monitored: true,
+	}
+	if err := authors.Create(ctx, author); err != nil {
+		t.Fatal(err)
+	}
+
+	path := filepath.Join(t.TempDir(), "Tracked.epub")
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	book := &models.Book{
+		ForeignID: "B-HIST", AuthorID: author.ID, Title: "T", SortTitle: "t",
+		Status: "imported", Genres: []string{},
+		MetadataProvider: "openlibrary", Monitored: true,
+	}
+	if err := books.Create(ctx, book); err != nil {
+		t.Fatal(err)
+	}
+	if err := books.AddBookFile(ctx, book.ID, models.MediaTypeEbook, path); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	h.DeleteFile(rec, withURLParam(httptest.NewRequest(http.MethodDelete,
+		"/api/v1/book/"+strconv.FormatInt(book.ID, 10)+"/file?path="+url.QueryEscape(path), nil),
+		"id", strconv.FormatInt(book.ID, 10)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	events, err := history.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, e := range events {
+		if e.EventType == models.HistoryEventBookFileDeleted && strings.Contains(e.Data, `"deregistered":true`) {
+			found = true
+			if !strings.Contains(e.Data, path) {
+				t.Errorf("history payload should name the path, got %q", e.Data)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected a deregistered-flagged history event, got %+v", events)
+	}
+}
+
+// TestBookDeleteFile_DeregisterToleratesTrailingSlash covers the path
+// normalisation: book_files stores cleaned paths, but an audiobook directory
+// copied out of a JSON dump often arrives with a trailing separator.
+func TestBookDeleteFile_DeregisterToleratesTrailingSlash(t *testing.T) {
+	h, books, _, author, ctx := bookFixture(t)
+
+	dir := filepath.Join(t.TempDir(), "Audiobook Folder")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	book := &models.Book{
+		ForeignID: "B-SLASH", AuthorID: author.ID, Title: "T", SortTitle: "t",
+		Status: "imported", Genres: []string{},
+		MetadataProvider: "openlibrary", Monitored: true,
+	}
+	if err := books.Create(ctx, book); err != nil {
+		t.Fatal(err)
+	}
+	if err := books.AddBookFile(ctx, book.ID, models.MediaTypeAudiobook, dir); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	h.DeleteFile(rec, withURLParam(httptest.NewRequest(http.MethodDelete,
+		"/api/v1/book/"+strconv.FormatInt(book.ID, 10)+"/file?path="+url.QueryEscape(dir+"/"), nil),
+		"id", strconv.FormatInt(book.ID, 10)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for a trailing-slash path, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if files, _ := books.ListFiles(ctx, book.ID); len(files) != 0 {
+		t.Errorf("row should be deregistered, got %+v", files)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Errorf("the directory must not be touched, stat err=%v", err)
 	}
 }
