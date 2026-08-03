@@ -33,6 +33,17 @@ had been red long enough for everyone to stop reading it.
   format token, and rejecting those would turn one ticked box into a near-total
   grab blackout), authors with no quality profile, and profiles with no format
   list, which already meant "allow all".
+
+  **If you have a configured quality profile, check it after upgrading.** The
+  profile editor offers eight formats (`pdf`, `mobi`, `epub`, `azw3`, `mp3`,
+  `m4a`, `m4b`, `flac`), but release parsing recognises nine more — `azw`,
+  `djvu`, `cbr`, `cbz`, `fb2`, `lit`, `rtf`, `txt`, `ogg`. Those nine cannot be
+  put on an allow-list that has no checkbox for them, so with a configured
+  profile they are now rejected where previously they were grabbable. Plain
+  `.azw` is the one most likely to bite: it is a real Kindle format that Bindery
+  ranks alongside `mobi`. Profiles left with no format list are unaffected —
+  that still means "allow all" — so this only applies if you actively ticked
+  boxes. Widening the editor's vocabulary is tracked in #1700.
 - **Naming templates: literal text after a zero-pad width now renders** (#1690)
   — `{SeriesNumber:3 - }{Title}` dropped both the padding and the trailing text,
   producing `2Sample Book` where the help text promises `002 - Sample Book`. On
