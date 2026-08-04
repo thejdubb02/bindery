@@ -5066,3 +5066,137 @@ func TestFetchAuthorBooks_AuthorDeletedDuringFetch_AbortsWithoutFKBurst(t *testi
 		t.Errorf("expected no books for deleted author, got %d", len(books))
 	}
 }
+
+// TestAddBook_DirectInsertDedupesAgainstCalibreStub pins the #1613 review
+// finding: the direct insert must run the same title dedup the catalogue sync
+// does, or a Calibre-imported library gets a second row for a book it already
+// has. The Calibre stub is adopted (its foreign id upgraded) so the caller's
+// poll finds it, exactly as the sync's dedup arm does.
+func TestAddBook_DirectInsertDedupesAgainstCalibreStub(t *testing.T) {
+	database, err := db.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	database.SetMaxOpenConns(1)
+
+	authorRepo := db.NewAuthorRepo(database)
+	bookRepo := db.NewBookRepo(database)
+	profileRepo := db.NewMetadataProfileRepo(database)
+	ctx := context.Background()
+
+	author := &models.Author{
+		ForeignID: "OL23919A", Name: "J. K. Rowling", SortName: "Rowling, J. K.",
+		MetadataProvider: "openlibrary", Monitored: true,
+	}
+	if err := authorRepo.Create(ctx, author); err != nil {
+		t.Fatal(err)
+	}
+	// The library already holds the work, imported from Calibre, so its
+	// foreign id is a calibre: stub and the requested OL id has no row.
+	stubRow := &models.Book{
+		ForeignID: "calibre:book:7", AuthorID: author.ID,
+		Title: "Harry Potter and the Chamber of Secrets", SortTitle: "harry potter and the chamber of secrets",
+		Status: models.BookStatusWanted, Genres: []string{}, MetadataProvider: "calibre",
+		MediaType: models.MediaTypeEbook,
+	}
+	if err := bookRepo.Create(ctx, stubRow); err != nil {
+		t.Fatal(err)
+	}
+
+	meta := &stubMetaProvider{
+		name: "openlibrary",
+		getBookByID: map[string]*models.Book{
+			"OL82537W": {
+				ForeignID: "OL82537W", Title: "Harry Potter and the Chamber of Secrets",
+				SortTitle: "harry potter and the chamber of secrets", Language: "eng",
+				Status: models.BookStatusWanted, Genres: []string{}, MetadataProvider: "openlibrary",
+				MediaType: models.MediaTypeEbook,
+			},
+		},
+	}
+	h := NewAuthorHandler(authorRepo, nil, bookRepo, nil, metadata.NewAggregator(meta), nil, profileRepo, nil)
+
+	body, _ := json.Marshal(map[string]any{
+		"foreignAuthorId": "OL23919A", "foreignBookId": "OL82537W", "mediaType": "ebook",
+	})
+	rec := httptest.NewRecorder()
+	h.AddBook(rec, httptest.NewRequest(http.MethodPost, "/api/v1/author/book", bytes.NewReader(body)))
+	if rec.Code >= 400 {
+		t.Fatalf("AddBook = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rows, err := bookRepo.ListByAuthor(ctx, author.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		var got []string
+		for _, b := range rows {
+			got = append(got, b.ForeignID+" "+b.Title)
+		}
+		t.Fatalf("expected the Calibre row to be adopted, got %d rows: %v", len(rows), got)
+	}
+	if rows[0].ForeignID != "OL82537W" {
+		t.Fatalf("Calibre stub should be upgraded to the requested foreign id, got %q", rows[0].ForeignID)
+	}
+	if rows[0].ID != stubRow.ID {
+		t.Fatalf("adoption must reuse the existing row (id %d), got id %d", stubRow.ID, rows[0].ID)
+	}
+}
+
+// TestAddBook_DirectInsertRejectsUnusableTitle pins the third review finding:
+// a provider record whose title is empty or is just the author's name must not
+// become a row, or the library grows folders like "Author Name/Author Name ()".
+func TestAddBook_DirectInsertRejectsUnusableTitle(t *testing.T) {
+	for _, tc := range []struct{ name, title string }{
+		{"empty", "   "},
+		{"author name as title", "J. K. Rowling"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database, err := db.OpenMemory()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer database.Close()
+			database.SetMaxOpenConns(1)
+
+			authorRepo := db.NewAuthorRepo(database)
+			bookRepo := db.NewBookRepo(database)
+			profileRepo := db.NewMetadataProfileRepo(database)
+			ctx := context.Background()
+
+			author := &models.Author{
+				ForeignID: "OL23919A", Name: "J. K. Rowling", SortName: "Rowling, J. K.",
+				MetadataProvider: "openlibrary", Monitored: true,
+			}
+			if err := authorRepo.Create(ctx, author); err != nil {
+				t.Fatal(err)
+			}
+			meta := &stubMetaProvider{
+				name: "openlibrary",
+				getBookByID: map[string]*models.Book{
+					"OLJUNKW": {
+						ForeignID: "OLJUNKW", Title: tc.title, Language: "eng",
+						Status: models.BookStatusWanted, Genres: []string{}, MetadataProvider: "openlibrary",
+					},
+				},
+			}
+			h := NewAuthorHandler(authorRepo, nil, bookRepo, nil, metadata.NewAggregator(meta), nil, profileRepo, nil)
+
+			body, _ := json.Marshal(map[string]any{
+				"foreignAuthorId": "OL23919A", "foreignBookId": "OLJUNKW",
+			})
+			rec := httptest.NewRecorder()
+			h.AddBook(rec, httptest.NewRequest(http.MethodPost, "/api/v1/author/book", bytes.NewReader(body)))
+
+			rows, err := bookRepo.ListByAuthor(ctx, author.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(rows) != 0 {
+				t.Fatalf("unusable title %q must not be inserted, got %d row(s): %q", tc.title, len(rows), rows[0].Title)
+			}
+		})
+	}
+}
