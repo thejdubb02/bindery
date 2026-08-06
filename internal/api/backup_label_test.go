@@ -30,7 +30,7 @@ func withFilenameParam(req *http.Request, filename string) *http.Request {
 	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 }
 
-// TestBackup_Create_WithLabel is the #1791 feature test: an optional label is
+// TestBackup_Create_WithLabel is the #1790 feature test: an optional label is
 // folded into the backup filename, and the labeled file round-trips through
 // List, Restore, and Delete (which previously rejected any name that was not a
 // bare timestamp).
