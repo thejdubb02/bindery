@@ -6,18 +6,34 @@ All notable changes to Bindery are documented here. Format loosely follows
 
 ## [v1.30.0] — 2026-08-06
 
-A UI release for the Author and Book detail pages, which had drifted into
-looking unfinished. Two of the fixes here are the same bug wearing different
+Mostly a UI release for the Author and Book detail pages, which had drifted
+into looking unfinished. Two of those fixes are the same bug wearing different
 clothes: a Tailwind class that compiles to nothing, and a Tailwind class that
 never compiles at all. Both had been shipping silently — the class name looks
 right in the DOM and the build succeeds, so nothing in the toolchain noticed the
 File card had collapsed to one column or that the author page had no width limit
-at all. Two lint rules now fail CI on either pattern. The rest is structure:
-one shared width across both pages, overflow menus instead of eight-button rows,
-selects instead of ten filter chips, and a cover placeholder that no longer reads
-as a broken image.
+at all. Two lint rules now fail CI on either pattern. The rest of the UI work is
+structure: one shared width across both pages, overflow menus instead of
+eight-button rows, selects instead of ten filter chips, and a cover placeholder
+that no longer reads as a broken image.
+
+Riding along: backups can carry a label instead of a bare timestamp, Audiobookshelf
+imports stop re-querying the same author once per book, and Hardcover list-sync
+authors finally get the default metadata profile every other path assigns.
 
 ### Added
+- **Label a backup when you create it** (#1790) — the Backup panel takes an
+  optional label, so a snapshot is saved as `bindery_<timestamp>_<label>.db`
+  (e.g. `bindery_20260726_181731_pre-import.db`) rather than a bare timestamp
+  you have to rename afterwards to recognise. Labelled backups restore and
+  delete correctly from the UI, which previously accepted only the
+  bare-timestamp filename; a backup renamed by hand to something outside the
+  `bindery_*` shape still lists but cannot be restored or deleted from the UI.
+  The label is sanitised before it reaches the filename — only `A-Za-z0-9_-`
+  survive, everything else collapses to `-`, capped at 40 characters — so a
+  label that reduces to nothing (an all-CJK one, for instance) is dropped and
+  the snapshot keeps its plain timestamp name. `POST /api/v1/backup` accepts the
+  optional `{"label": "..."}` body; sending none behaves exactly as before.
 - **Series name and position on the book detail page** (#1795) — `series_books`
   has been populated since v0.7.0 and this page never surfaced it. A book that
   belongs to a series now shows it in the meta row (`Discworld #3`), once per
@@ -72,6 +88,24 @@ as a broken image.
   author page, instead of running the full height of the page.
 
 ### Fixed
+- **Audiobookshelf imports no longer re-query the same author once per book**
+  (#1788) — the importer looked each book's author up against the metadata
+  providers with no caching, so every book on the same shelf re-issued an
+  identical provider search. When that search was slow or unreachable —
+  OpenLibrary author search timing out on romanised-CJK pen names, Hardcover
+  returning 401 — each repeat paid the full per-request timeout again, dragging
+  a single author's shelf out to minutes. The lookup is now memoised for the
+  duration of one import run. Note the trade: a provider that degrades
+  mid-import stays degraded for that author until the run ends, where
+  previously each book got a fresh attempt.
+- **Hardcover list-sync authors now get the default metadata profile** (#1736,
+  #1783) — they were created with no profile assigned instead of the default
+  "Standard", and existing rows are backfilled by migration. No behaviour
+  changed as a result, because every reader already fell back to the default;
+  what it fixes is the profile shown in the UI and three separate fallbacks
+  that had to stay in sync. Five other author-creation paths still insert no
+  profile, so the migration is a one-shot cleanup rather than a permanent fix —
+  tracked in #1803.
 - **The book detail File card had collapsed to a single column** (#1791) — its
   label/value grid separated the two tracks with a comma, which Tailwind passes
   through verbatim into an invalid `grid-template-columns` declaration that every
@@ -94,6 +128,15 @@ as a broken image.
   fixed height, and the published year no longer appears and disappears between
   cards (the formatter already returns an em dash for a missing date, so the
   surrounding conditional only ever removed the row).
+
+### Docs
+- **`BINDERY_TRUSTED_PROXY` governs the forwarded scheme and host, not just
+  proxy auth** (#1787) — the deployment reference now says so. Requests from a
+  peer outside this list have every `X-Forwarded-*` header stripped, so behind
+  a TLS-terminating reverse proxy the OPDS feed links come out `http://`, and
+  `BINDERY_COOKIE_SECURE=auto` and the OIDC `redirect_uri` both see the wrong
+  scheme, until the proxy's IP or CIDR is trusted here. Set it even if you are
+  not using proxy auth.
 
 ### Security
 - **Bumped js-yaml to 4.3.1** (#1793, GHSA-5p4m-2wfm-xmqj) — resolves a
