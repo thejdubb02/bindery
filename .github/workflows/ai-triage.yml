@@ -56,8 +56,26 @@ jobs:
     if: >-
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository
+    env:
+      # The header says this workflow "no-ops cleanly" until ANTHROPIC_API_KEY
+      # exists. It did not — with no key it installed bun, the CLI, and then
+      # failed hard, putting a red X on every pull request. A check that is red
+      # for a reason nobody can act on is a check people stop reading, which is
+      # how three unrelated breakages here went unnoticed for over a week.
+      #
+      # secrets cannot be referenced from a step-level `if`, so the test is
+      # lifted to a job-level env var and read from there.
+      HAS_ANTHROPIC_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
     steps:
+      - name: Report that review is disabled
+        if: env.HAS_ANTHROPIC_KEY != 'true'
+        shell: bash
+        run: |
+          echo "ANTHROPIC_API_KEY is not set; skipping AI review." >> "$GITHUB_STEP_SUMMARY"
+          echo "Add the secret to enable it — note that doing so spends API credit on every internal-branch PR." >> "$GITHUB_STEP_SUMMARY"
+
       - name: Harden the runner (block non-allowlisted egress)
+        if: env.HAS_ANTHROPIC_KEY == 'true'
         uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           # block (#1401): this job hands ANTHROPIC_API_KEY and a write-scoped
@@ -89,6 +107,7 @@ jobs:
             downloads.claude.ai:443
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.HAS_ANTHROPIC_KEY == 'true'
         with:
           # The agent only needs the tree for Read/Grep/Glob. Don't leave a
           # push-capable token in .git/config where its own Read tool can slurp
@@ -96,6 +115,7 @@ jobs:
           persist-credentials: false
 
       - name: Triage / review with Claude
+        if: env.HAS_ANTHROPIC_KEY == 'true'
         uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1.0.183
         env:
           GH_TOKEN: ${{ github.token }}
