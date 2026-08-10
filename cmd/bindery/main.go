@@ -757,6 +757,11 @@ func main() {
 				Version                         string `json:"version"`
 				Commit                          string `json:"commit"`
 				BuildDate                       string `json:"buildDate"`
+				// LatestVersion is the newest published release as reported
+				// by the telemetry ping server. Empty when no ping has
+				// succeeded yet or telemetry is disabled — the frontend
+				// shows an update badge only when it is set and newer.
+				LatestVersion                   string `json:"latestVersion,omitempty"`
 				ImageCacheBytes                 int64  `json:"imageCacheBytes"`
 				EnhancedHardcoverAPI            bool   `json:"enhancedHardcoverApi"`
 				HardcoverTokenConfigured        bool   `json:"hardcoverTokenConfigured"`
@@ -765,6 +770,7 @@ func main() {
 				Version:                         version,
 				Commit:                          commit,
 				BuildDate:                       date,
+				LatestVersion:                   telemetryClient.LatestVersion(),
 				ImageCacheBytes:                 cacheBytes,
 				EnhancedHardcoverAPI:            hardcoverState.EnhancedHardcoverAPI,
 				HardcoverTokenConfigured:        hardcoverState.HardcoverTokenConfigured,
