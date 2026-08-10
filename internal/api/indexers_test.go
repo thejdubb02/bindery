@@ -23,11 +23,27 @@ import (
 type mockIndexerSearcher struct {
 	ebookResults []newznab.SearchResult
 	audioResults []newznab.SearchResult
-	lastCrit     indexer.MatchCriteria
+
+	// SearchBook runs the ebook and audiobook legs of a dual-format book
+	// concurrently, so both goroutines land here. mu guards the recorded
+	// criteria; without it the race detector flags the write and the value
+	// read back is whichever leg happened to finish last.
+	mu       sync.Mutex
+	lastCrit indexer.MatchCriteria
+}
+
+// criteria returns the criteria from the most recent call, safe to read after
+// the handler has returned.
+func (m *mockIndexerSearcher) criteria() indexer.MatchCriteria {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastCrit
 }
 
 func (m *mockIndexerSearcher) SearchBookWithDebug(_ context.Context, _ []models.Indexer, c indexer.MatchCriteria) ([]newznab.SearchResult, *indexer.SearchDebug) {
+	m.mu.Lock()
 	m.lastCrit = c
+	m.mu.Unlock()
 	switch c.MediaType {
 	case models.MediaTypeEbook:
 		return m.ebookResults, nil
@@ -652,7 +668,7 @@ func TestSearchBook_PopulatesISBNFromEdition(t *testing.T) {
 	if want == "" {
 		t.Fatal("test setup: release title must parse to a non-empty ISBN")
 	}
-	if mock.lastCrit.ISBN != want {
-		t.Errorf("search criteria ISBN = %q, want %q (the ISBN parsed from a matching release)", mock.lastCrit.ISBN, want)
+	if got := mock.criteria().ISBN; got != want {
+		t.Errorf("search criteria ISBN = %q, want %q (the ISBN parsed from a matching release)", got, want)
 	}
 }
