@@ -2205,10 +2205,10 @@ func renderFunnel(stages []funnelStage) string {
 			`this section populates as new installs arrive on it.</p></div>`
 	}
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf(
+	fmt.Fprintf(&b,
 		`<p class="empty" style="margin:0 0 .5rem 0">Out of %d new install%s on funnel-capable versions. `+
 			`"By D+1/D+7" count only installs old enough for that window.</p>`,
-		stages[0].Cohort, pluralS(stages[0].Cohort)))
+		stages[0].Cohort, pluralS(stages[0].Cohort))
 	b.WriteString(`<div class="chart"><table class="bars"><tr>` +
 		`<td class="legend-cell"></td>` +
 		`<td class="count-cell">by D+1</td>` +
