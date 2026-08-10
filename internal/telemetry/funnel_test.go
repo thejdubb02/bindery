@@ -116,3 +116,48 @@ func TestGatherFunnel_DerivesGrabAndImportFromHistory(t *testing.T) {
 		t.Errorf("re-gather changed FirstGrabDay: %v vs %v", f2.FirstGrabDay, f.FirstGrabDay)
 	}
 }
+
+// TestGatherFunnel_TolerantOfBadInput covers the defensive branches: a
+// malformed stored timestamp, and a nil history repo (a caller that wired
+// no history — the grab/import derivation must simply be skipped, not panic).
+func TestGatherFunnel_TolerantOfBadInput(t *testing.T) {
+	settings, _ := newFunnelFixture(t)
+	ctx := context.Background()
+	install := time.Now().UTC().Add(-72 * time.Hour)
+
+	setFunnelTime(t, settings, SettingInstallCreatedAt, install)
+	if err := settings.Set(ctx, SettingFirstIndexerAt, "not-a-timestamp"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	setFunnelTime(t, settings, SettingFirstClientAt, install.Add(24*time.Hour))
+
+	f := Features{}
+	GatherFunnel(ctx, settings, nil, &f) // nil history on purpose
+
+	if f.SetupIndexerDay != nil {
+		t.Errorf("SetupIndexerDay = %d, want nil (unparseable value ignored)", *f.SetupIndexerDay)
+	}
+	if f.SetupClientDay == nil || *f.SetupClientDay != 1 {
+		t.Errorf("SetupClientDay = %v, want 1 (good values still read)", f.SetupClientDay)
+	}
+	if f.FirstGrabDay != nil {
+		t.Errorf("FirstGrabDay = %d, want nil with no history repo", *f.FirstGrabDay)
+	}
+}
+
+// TestGatherFunnel_UnparseableAnchor: a corrupt install anchor must disable
+// the whole section rather than produce nonsense offsets.
+func TestGatherFunnel_UnparseableAnchor(t *testing.T) {
+	settings, history := newFunnelFixture(t)
+	ctx := context.Background()
+	if err := settings.Set(ctx, SettingInstallCreatedAt, "garbage"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	setFunnelTime(t, settings, SettingFirstIndexerAt, time.Now().UTC())
+
+	f := Features{}
+	GatherFunnel(ctx, settings, history, &f)
+	if f.SetupIndexerDay != nil {
+		t.Errorf("SetupIndexerDay = %d, want nil with a corrupt anchor", *f.SetupIndexerDay)
+	}
+}
