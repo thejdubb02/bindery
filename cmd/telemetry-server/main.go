@@ -590,7 +590,7 @@ func (s *server) loadLedgerBackfill(ctx context.Context, path string) (int, erro
 		if err != nil {
 			return 0, fmt.Errorf("gunzip backfill: %w", err)
 		}
-		defer gz.Close()
+		defer func() { _ = gz.Close() }()
 		r = gz
 	}
 	recs, err := csv.NewReader(r).ReadAll()
