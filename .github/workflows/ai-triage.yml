@@ -99,6 +99,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Use this job's own token rather than the action's default auth.
+          #
+          # Without it, setupGitHubToken() mints a GitHub OIDC token and
+          # exchanges it for a GitHub App installation token — which needs
+          # `id-token: write` and, more importantly, carries the action's own
+          # DEFAULT_PERMISSIONS of contents/pull_requests/issues: write. Those
+          # are independent of the `permissions:` block above, so that path
+          # would hand this job issue-write capability again and silently undo
+          # the narrowing in #1819.
+          #
+          # Passing the token explicitly takes the OVERRIDE_GITHUB_TOKEN branch
+          # and returns before any OIDC call, which keeps `permissions:` the
+          # single source of truth for what this workflow can do.
+          github_token: ${{ github.token }}
           # Narrowed from Bash(gh:*): the agent reads untrusted issue/PR text, so
           # deny it `gh api` / `gh secret` / `gh auth` / `gh workflow` and any
           # arbitrary Bash. It gets exactly the issue+PR subcommands it needs.
