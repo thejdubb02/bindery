@@ -87,7 +87,14 @@ func (q *queryCache) do(ctx context.Context, key string, fetch func() ([]byte, e
 	if e, ok := q.entries[key]; ok {
 		select {
 		case <-e.done:
-			if time.Since(e.at) < queryCacheTTL {
+			// e.err must be checked here, not just at the write side below.
+			// close(e.done) and the delete of a failed entry are two separate
+			// critical sections, so a caller arriving in between finds the
+			// failed entry still in the map with e.at just set. Without this
+			// guard it would return (nil, nil) and swallow the error — and
+			// BookSearch depends on a tier-1 error aborting the cascade
+			// rather than falling through into the remaining tiers.
+			if e.err == nil && time.Since(e.at) < queryCacheTTL {
 				body := e.body
 				q.mu.Unlock()
 				return body, nil

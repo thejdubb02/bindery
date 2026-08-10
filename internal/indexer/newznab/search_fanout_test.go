@@ -2,6 +2,7 @@ package newznab
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -203,6 +204,43 @@ func TestQueryCache_DoesNotCacheFailures(t *testing.T) {
 	}
 	if len(results) == 0 {
 		t.Fatal("retry after a failure returned no results — the failure was cached")
+	}
+}
+
+// TestQueryCache_FailedEntryStillInMapIsNotServedAsSuccess covers the window
+// between close(e.done) and the delete of a failed entry: those are two
+// separate critical sections, so a caller can find the failed entry still in
+// the map with done closed and e.at just set. Reading it as a hit would return
+// (nil, nil) and swallow the error.
+//
+// That matters beyond the lost error: BookSearch aborts the whole cascade on a
+// tier-1 error, so a swallowed one looks like "no results" and falls through
+// into the remaining tiers — issuing more indexer queries, which is the
+// opposite of what #1814 is for.
+//
+// The window is not reachable by racing two real requests, so the entry is
+// planted directly in the state the write side leaves behind.
+func TestQueryCache_FailedEntryStillInMapIsNotServedAsSuccess(t *testing.T) {
+	q := newQueryCache()
+	fetchErr := errors.New("indexer exploded")
+
+	planted := &queryCacheEntry{done: make(chan struct{}), err: fetchErr, at: time.Now()}
+	close(planted.done)
+	q.entries["k"] = planted
+
+	var refetched bool
+	body, err := q.do(context.Background(), "k", func() ([]byte, error) {
+		refetched = true
+		return []byte("fresh"), nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !refetched {
+		t.Fatal("a failed entry must not be served from the cache; fetch was never retried")
+	}
+	if string(body) != "fresh" {
+		t.Fatalf("body = %q, want the refetched body — a nil body here is the swallowed error", body)
 	}
 }
 
