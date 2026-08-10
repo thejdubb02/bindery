@@ -754,9 +754,9 @@ func main() {
 			cacheBytes, _ := imageProxyHandler.CacheSize()
 			hardcoverState := api.HardcoverFeatureStateFor(r.Context(), settingsRepo, cfg.EnhancedHardcoverAPI)
 			_ = json.NewEncoder(w).Encode(struct {
-				Version                         string `json:"version"`
-				Commit                          string `json:"commit"`
-				BuildDate                       string `json:"buildDate"`
+				Version   string `json:"version"`
+				Commit    string `json:"commit"`
+				BuildDate string `json:"buildDate"`
 				// LatestVersion is the newest published release as reported
 				// by the telemetry ping server. Empty when no ping has
 				// succeeded yet or telemetry is disabled — the frontend
