@@ -14,9 +14,12 @@
 package main
 
 import (
+	"compress/gzip"
 	"context"
 	"database/sql"
+	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -561,6 +564,126 @@ func (s *server) reconcileNewInstallsSeed(ctx context.Context, path string) (int
 	return raised, nil
 }
 
+// loadLedgerBackfill imports historical (day, install_id, version) rows
+// into the daily_activity ledger from an operator-supplied CSV (gzipped
+// when the path ends in .gz). Recovery path for days that predate the
+// ledger: the rows are reconstructed offline from archived /api/backup
+// snapshots (each install's last_seen day per snapshot) and ping log
+// lines, then mounted into the pod. For every day touched it recomputes
+// daily_global.active_day and the daily_version rows from the ledger —
+// leaving new_installs and total alone, since those are historical values
+// this data can't improve — and lowers the ledger epoch to the earliest
+// imported day so the dashboard stops footnoting days that are now real.
+//
+// Runs once: the meta row ledger_backfill_done records the imported row
+// count and the loader skips when it matches, so restarts don't re-import;
+// shipping a bigger file re-runs it (INSERT OR IGNORE keeps that safe).
+func (s *server) loadLedgerBackfill(ctx context.Context, path string) (int, error) {
+	f, err := os.Open(path) // #nosec G304 -- operator-supplied env var, not user input
+	if err != nil {
+		return 0, fmt.Errorf("open backfill: %w", err)
+	}
+	defer f.Close()
+	var r io.Reader = f
+	if strings.HasSuffix(path, ".gz") {
+		gz, err := gzip.NewReader(f)
+		if err != nil {
+			return 0, fmt.Errorf("gunzip backfill: %w", err)
+		}
+		defer gz.Close()
+		r = gz
+	}
+	recs, err := csv.NewReader(r).ReadAll()
+	if err != nil {
+		return 0, fmt.Errorf("parse backfill: %w", err)
+	}
+
+	var done string
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(value), '') FROM meta WHERE key = 'ledger_backfill_done'`,
+	).Scan(&done); err != nil {
+		return 0, fmt.Errorf("read done marker: %w", err)
+	}
+	if done == fmt.Sprint(len(recs)) {
+		return 0, nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	inserted := 0
+	days := map[string]bool{}
+	minDay := ""
+	for _, rec := range recs {
+		if len(rec) != 3 {
+			continue
+		}
+		day, id, version := rec[0], rec[1], rec[2]
+		if !dayKeyRE.MatchString(day) || !uuidRE.MatchString(id) || !isReleaseVersion(version) {
+			slog.Warn("ledger backfill: skipping malformed row", "day", day)
+			continue
+		}
+		res, err := tx.ExecContext(ctx, `
+			INSERT OR IGNORE INTO daily_activity (day, install_id, version)
+			VALUES (?, ?, ?)
+		`, day, id, normalizeVersion(version))
+		if err != nil {
+			return 0, fmt.Errorf("insert %s: %w", day, err)
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			inserted++
+		}
+		days[day] = true
+		if minDay == "" || day < minDay {
+			minDay = day
+		}
+	}
+
+	// Re-derive the aggregates for every imported day from the (now
+	// fuller) ledger. active_day and the version split only — see doc.
+	for day := range days {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO daily_global (day, active_day, new_installs, total)
+			SELECT ?, COUNT(*), 0, 0 FROM daily_activity WHERE day = ?
+			ON CONFLICT(day) DO UPDATE SET active_day = excluded.active_day
+		`, day, day); err != nil {
+			return 0, fmt.Errorf("reaggregate global %s: %w", day, err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM daily_version WHERE day = ?`, day); err != nil {
+			return 0, fmt.Errorf("clear version %s: %w", day, err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO daily_version (day, version, active_count)
+			SELECT day, version, COUNT(*) FROM daily_activity
+			WHERE day = ? GROUP BY version
+		`, day); err != nil {
+			return 0, fmt.Errorf("reaggregate version %s: %w", day, err)
+		}
+	}
+
+	if minDay != "" {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE meta SET value = ? WHERE key = ? AND value > ?
+		`, minDay, ledgerEpochKey, minDay); err != nil {
+			return 0, fmt.Errorf("lower epoch: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO meta (key, value) VALUES ('ledger_backfill_done', ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value
+	`, fmt.Sprint(len(recs))); err != nil {
+		return 0, fmt.Errorf("done marker: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit: %w", err)
+	}
+	return inserted, nil
+}
+
 // aggregateHealDays is how many trailing days each aggregate tick
 // re-snapshots. Snapshots read the daily_activity ledger, so recomputing a
 // past day is exact — a tick that fails (or a process that was down over a
@@ -772,6 +895,23 @@ func main() {
 			slog.Warn("new-installs seed reconcile failed", "path", seedPath, "error", err)
 		} else {
 			slog.Info("new-installs seed reconciled", "path", seedPath, "days_raised", n)
+		}
+	}
+
+	// Optional one-time recovery: when LEDGER_BACKFILL_PATH points at a
+	// (day, install_id, version) CSV (.gz supported), import historical
+	// per-day activity into the ledger and re-derive those days' aggregate
+	// rows. See loadLedgerBackfill for provenance and idempotency; no-op
+	// when unset, safe to leave mounted across restarts.
+	// A missing file is a normal state (the deployment mounts an optional
+	// ConfigMap), so it skips silently rather than warning every boot.
+	if backfillPath := env("LEDGER_BACKFILL_PATH", ""); backfillPath != "" {
+		if n, err := s.loadLedgerBackfill(context.Background(), backfillPath); errors.Is(err, os.ErrNotExist) {
+			// no backfill mounted — nothing to do
+		} else if err != nil {
+			slog.Warn("ledger backfill failed", "path", backfillPath, "error", err)
+		} else {
+			slog.Info("ledger backfill applied", "path", backfillPath, "rows_inserted", n)
 		}
 	}
 

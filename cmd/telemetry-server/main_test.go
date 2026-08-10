@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -1354,5 +1355,102 @@ func TestSweepStaleAndDev_LedgerRetention(t *testing.T) {
 	want := []string{uuid('2'), uuid('3')}
 	if len(kept) != 2 || kept[0] != want[0] || kept[1] != want[1] {
 		t.Errorf("kept = %v, want %v", kept, want)
+	}
+}
+
+// TestLoadLedgerBackfill covers the historical-recovery path: importing a
+// gzipped (day, install_id, version) CSV populates the ledger, re-derives
+// active_day + daily_version for the touched days without disturbing
+// new_installs/total, lowers the epoch, and is a no-op on re-run.
+func TestLoadLedgerBackfill(t *testing.T) {
+	s := newTestServer(t, "v1.15.3")
+	ctx := context.Background()
+
+	// Pre-existing state: a (wrong, undercounted) aggregate row for the
+	// backfill day with historical new_installs/total that must survive,
+	// an epoch later than the backfill span, and one ledger row that the
+	// import must not duplicate.
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO daily_global (day, active_day, new_installs, total) VALUES ('2026-06-01', 7, 12, 300)`,
+	); err != nil {
+		t.Fatalf("seed daily_global: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO meta (key, value) VALUES (?, '2026-08-01')`, ledgerEpochKey,
+	); err != nil {
+		t.Fatalf("seed epoch: %v", err)
+	}
+	insertActivity(t, s, uuid('1'), "1.15.2", time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC))
+
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	// uuid('1') on 2026-06-01 duplicates the existing ledger row; the
+	// malformed line must be skipped without failing the import.
+	for _, line := range []string{
+		"2026-06-01," + uuid('1') + ",1.15.2",
+		"2026-06-01," + uuid('2') + ",1.15.2",
+		"2026-06-01," + uuid('3') + ",1.15.1",
+		"2026-06-02," + uuid('2') + ",1.15.2",
+		"not-a-day,junk,1.15.2",
+	} {
+		if _, err := gz.Write([]byte(line + "\n")); err != nil {
+			t.Fatalf("gzip write: %v", err)
+		}
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "backfill.csv.gz")
+	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+		t.Fatalf("write backfill: %v", err)
+	}
+
+	n, err := s.loadLedgerBackfill(ctx, path)
+	if err != nil {
+		t.Fatalf("loadLedgerBackfill: %v", err)
+	}
+	if n != 3 {
+		t.Errorf("rows inserted = %d, want 3 (1 dup ignored, 1 malformed skipped)", n)
+	}
+
+	var activeDay, newInstalls, total int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT active_day, new_installs, total FROM daily_global WHERE day = '2026-06-01'`,
+	).Scan(&activeDay, &newInstalls, &total); err != nil {
+		t.Fatalf("read daily_global: %v", err)
+	}
+	if activeDay != 3 {
+		t.Errorf("active_day = %d, want 3 (re-derived from ledger)", activeDay)
+	}
+	if newInstalls != 12 || total != 300 {
+		t.Errorf("new_installs/total = %d/%d, want 12/300 (historical values preserved)", newInstalls, total)
+	}
+
+	var verCount int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT active_count FROM daily_version WHERE day = '2026-06-01' AND version = '1.15.2'`,
+	).Scan(&verCount); err != nil {
+		t.Fatalf("read daily_version: %v", err)
+	}
+	if verCount != 2 {
+		t.Errorf("daily_version[1.15.2] = %d, want 2", verCount)
+	}
+
+	var epoch string
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT value FROM meta WHERE key = ?`, ledgerEpochKey).Scan(&epoch); err != nil {
+		t.Fatalf("read epoch: %v", err)
+	}
+	if epoch != "2026-06-01" {
+		t.Errorf("epoch = %q, want 2026-06-01 (lowered to earliest backfill day)", epoch)
+	}
+
+	// Second run with the same file: done-marker short-circuits.
+	n2, err := s.loadLedgerBackfill(ctx, path)
+	if err != nil {
+		t.Fatalf("re-run: %v", err)
+	}
+	if n2 != 0 {
+		t.Errorf("re-run inserted = %d, want 0 (done marker)", n2)
 	}
 }
