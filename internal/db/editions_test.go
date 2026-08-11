@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/vavallee/bindery/internal/models"
 )
@@ -309,5 +310,80 @@ func TestEditionRepo_ListByBook(t *testing.T) {
 	}
 	if len(other) != 0 {
 		t.Errorf("unrelated book should have 0 editions, got %d", len(other))
+	}
+}
+
+func TestEditionRepo_GetByID(t *testing.T) {
+	database, err := OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	ctx := context.Background()
+
+	authorRepo := NewAuthorRepo(database)
+	bookRepo := NewBookRepo(database)
+	a := &models.Author{ForeignID: "OL-GID-A", Name: "A", SortName: "A", MetadataProvider: "openlibrary", Monitored: true}
+	if err := authorRepo.Create(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	b := &models.Book{
+		ForeignID: "OL-GID-B", AuthorID: a.ID, Title: "Book", SortTitle: "Book",
+		Status: "wanted", Genres: []string{}, MetadataProvider: "openlibrary", Monitored: true,
+	}
+	if err := bookRepo.Create(ctx, b); err != nil {
+		t.Fatal(err)
+	}
+
+	repo := NewEditionRepo(database)
+	ed := &models.Edition{
+		ForeignID: "calibre:edition:9:EPUB", BookID: b.ID, Title: "Ninth Edition",
+		Format: "EPUB", Language: "eng", IsEbook: true, Monitored: true,
+	}
+	if err := repo.Upsert(ctx, ed); err != nil {
+		t.Fatalf("seed edition: %v", err)
+	}
+
+	got, err := repo.GetByID(ctx, ed.ID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got == nil || got.Title != "Ninth Edition" || got.BookID != b.ID {
+		t.Fatalf("GetByID returned %+v, want the seeded edition", got)
+	}
+
+	// A missing row is (nil, nil), not an error — callers treat "gone" as a
+	// normal outcome rather than a failure.
+	missing, err := repo.GetByID(ctx, ed.ID+1000)
+	if err != nil {
+		t.Fatalf("GetByID missing: unexpected error %v", err)
+	}
+	if missing != nil {
+		t.Errorf("GetByID missing = %+v, want nil", missing)
+	}
+
+	// GetByID must read through exec, not the pool: the Calibre rollback
+	// labels editions from inside its own write transaction (#1896), so it
+	// has to see that transaction's uncommitted writes.
+	tx, err := database.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	txRepo := repo.WithTx(tx)
+	if err := txRepo.Delete(ctx, ed.ID); err != nil {
+		t.Fatalf("delete in tx: %v", err)
+	}
+	// Bounded so a regression to a pool read fails on the deadline instead
+	// of hanging the package: the pool read would block behind the open
+	// writer rather than returning stale data.
+	txCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	inTx, err := txRepo.GetByID(txCtx, ed.ID)
+	if err != nil {
+		t.Fatalf("GetByID in tx: %v", err)
+	}
+	if inTx != nil {
+		t.Errorf("GetByID in tx = %+v, want nil (should see the tx's own delete)", inTx)
 	}
 }

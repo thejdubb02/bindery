@@ -54,6 +54,26 @@ func (r *EditionRepo) GetByForeignID(ctx context.Context, foreignID string) (*mo
 	return &e, nil
 }
 
+// GetByID returns the edition with this primary key, or (nil, nil) when no
+// such row exists. Routed through exec rather than db so a WithTx clone reads
+// its own uncommitted writes — the Calibre rollback preview labels editions
+// from inside the rollback transaction (#1896).
+func (r *EditionRepo) GetByID(ctx context.Context, id int64) (*models.Edition, error) {
+	row := r.exec.QueryRowContext(ctx, `
+		SELECT id, foreign_id, book_id, title, isbn_13, isbn_10, asin, publisher,
+		       publish_date, format, num_pages, language, image_url, is_ebook,
+		       edition_info, monitored, created_at, updated_at
+		FROM editions WHERE id = ?`, id)
+	e, err := scanEditionFrom(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get edition %d: %w", id, err)
+	}
+	return &e, nil
+}
+
 // ListByBook returns every edition linked to bookID, in insertion order.
 func (r *EditionRepo) ListByBook(ctx context.Context, bookID int64) ([]models.Edition, error) {
 	rows, err := r.exec.QueryContext(ctx, `

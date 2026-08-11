@@ -528,3 +528,90 @@ func TestRollback_MidLoopFailureRollsBackTransaction(t *testing.T) {
 		t.Error("author still present after successful retry rollback")
 	}
 }
+
+// TestRollbackDisplayName_EditionResolvesByLocalID pins #1896: the edition
+// branch used to list a hardcoded book id 0 and scan the (always empty)
+// result, so every edition row in the rollback preview rendered blank.
+func TestRollbackDisplayName_EditionResolvesByLocalID(t *testing.T) {
+	_, _, authorRepo, bookRepo, editionRepo, _, _, _ := newRollbackFixture(t)
+	ctx := context.Background()
+
+	author := &models.Author{
+		ForeignID: "calibre:author:1896", Name: "Ada Author", SortName: "Author, Ada",
+		MetadataProvider: "calibre", Monitored: true,
+	}
+	if err := authorRepo.Create(ctx, author); err != nil {
+		t.Fatalf("create author: %v", err)
+	}
+	book := &models.Book{
+		ForeignID: "calibre:book:1896", AuthorID: author.ID, Title: "Parent Book",
+		SortTitle: "Parent Book", Status: "wanted", Genres: []string{},
+		MetadataProvider: "calibre", Monitored: true,
+	}
+	if err := bookRepo.Create(ctx, book); err != nil {
+		t.Fatalf("create book: %v", err)
+	}
+	// Deliberately titled differently from its book so a label sourced from
+	// the wrong row is visible in the assertion.
+	edition := &models.Edition{
+		ForeignID: "calibre:edition:1896:EPUB", BookID: book.ID, Title: "Edition Label",
+		Format: "EPUB", Language: "eng", IsEbook: true, Monitored: true,
+	}
+	if err := editionRepo.Upsert(ctx, edition); err != nil {
+		t.Fatalf("create edition: %v", err)
+	}
+
+	got := rollbackDisplayName(ctx, bookRepo, authorRepo, editionRepo, models.CalibreEntitySnapshot{
+		EntityType: entityTypeEdition,
+		ExternalID: "edition:1896:EPUB",
+		LocalID:    edition.ID,
+	})
+	if got != "Edition Label" {
+		t.Errorf("edition display name = %q, want %q", got, "Edition Label")
+	}
+
+	// An edition that is already gone still labels as empty rather than
+	// erroring — the preview degrades gracefully.
+	gone := rollbackDisplayName(ctx, bookRepo, authorRepo, editionRepo, models.CalibreEntitySnapshot{
+		EntityType: entityTypeEdition,
+		ExternalID: "edition:1896:PDF",
+		LocalID:    edition.ID + 1000,
+	})
+	if gone != "" {
+		t.Errorf("display name for missing edition = %q, want empty", gone)
+	}
+}
+
+// TestImporter_PreviewRollback_EditionActionsCarryDisplayName is the
+// user-visible half of #1896: the preview is what someone reads before
+// undoing an import, so edition rows must name what is about to be removed.
+func TestImporter_PreviewRollback_EditionActionsCarryDisplayName(t *testing.T) {
+	imp, fr, _, _, _, runsRepo, _, _ := newRollbackFixture(t)
+	fr.books = []CalibreBook{sampleCalibreBook(30, "Named Edition Book", "Alice")}
+	if _, err := imp.Run(context.Background(), "/lib"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	runs, _ := runsRepo.ListRecent(context.Background(), 5)
+	if len(runs) == 0 {
+		t.Fatal("no runs recorded")
+	}
+
+	preview, err := imp.PreviewRollback(context.Background(), runs[0].ID)
+	if err != nil {
+		t.Fatalf("PreviewRollback: %v", err)
+	}
+	var sawEdition bool
+	for _, a := range preview.Actions {
+		if a.EntityType != entityTypeEdition {
+			continue
+		}
+		sawEdition = true
+		// The Calibre importer titles each edition after its book.
+		if a.DisplayName != "Named Edition Book" {
+			t.Errorf("edition action %q display name = %q, want %q", a.ExternalID, a.DisplayName, "Named Edition Book")
+		}
+	}
+	if !sawEdition {
+		t.Fatal("preview contained no edition actions; fixture is not exercising the edition branch")
+	}
+}

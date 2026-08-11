@@ -642,16 +642,15 @@ func rollbackDisplayName(ctx context.Context, books *db.BookRepo, authors *db.Au
 		if editions == nil {
 			return ""
 		}
-		eds, err := editions.ListByBook(ctx, 0)
-		if err != nil {
+		// An edition snapshot's local_id is the edition row id, so look it
+		// up directly. This used to list a hardcoded book id 0 and scan the
+		// (always empty) result, which blanked every edition label in the
+		// rollback preview (#1896).
+		e, err := editions.GetByID(ctx, entity.LocalID)
+		if err != nil || e == nil {
 			return ""
 		}
-		for _, e := range eds {
-			if e.ID == entity.LocalID {
-				return strings.TrimSpace(e.Title)
-			}
-		}
-		return ""
+		return strings.TrimSpace(e.Title)
 	default:
 		return ""
 	}
