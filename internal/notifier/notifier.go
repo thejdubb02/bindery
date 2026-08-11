@@ -36,7 +36,9 @@ const (
 // notification showed the same string twice and never said what occurred. The
 // original item name is preserved under `item`, and `eventType` is added to
 // every payload (not just `test`) so templates can key off it. All original
-// fields (size, format, path, status, clientId, …) are kept for templaters.
+// fields (size, path, status, clientId, …) are kept for templaters; the one
+// exception is `format`, which is renamed to `mediaFormat` because Apprise
+// reserves that key (#1886).
 func normalizeEventPayload(eventType string, payload map[string]interface{}) map[string]interface{} {
 	out := make(map[string]interface{}, len(payload)+3)
 	for k, v := range payload {
@@ -93,6 +95,18 @@ func normalizeEventPayload(eventType string, payload map[string]interface{}) map
 	default:
 		title, body = item, msg
 	}
+	// "format" is a reserved field in Apprise's REST payload: it names the
+	// body's markup (text/html/markdown) and anything else is rejected with
+	// HTTP 400 before the notification is dispatched. Our media format
+	// ("ebook"/"audiobook") travelled under exactly that key, so every import
+	// and upgrade webhook failed while grab/failure/health — the events that
+	// carry no "format" — went through (#1886). Ship it as "mediaFormat"
+	// instead; the value is unchanged and still appears in the message.
+	if v, ok := out["format"]; ok {
+		delete(out, "format")
+		out["mediaFormat"] = v
+	}
+
 	out["title"] = title
 	out["message"] = body
 	return out

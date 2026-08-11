@@ -3,6 +3,7 @@ package notifier
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -412,6 +413,49 @@ func TestNormalizeEventPayload(t *testing.T) {
 			// The original item name is preserved when present.
 			if item, _ := c.in["title"].(string); item != "" && out["item"] != item {
 				t.Errorf("item = %v, want %q", out["item"], item)
+			}
+		})
+	}
+}
+
+// TestNormalizeEventPayload_NoReservedFormatKey is the regression test for
+// #1886: Apprise 400s a payload whose "format" is not one of its body markups
+// (text/html/markdown), which killed every bookImported and upgrade webhook
+// while grab/failure/health — the events with no "format" — delivered fine.
+// The media format must travel under "mediaFormat" and the reserved key must
+// not appear on the wire for any event.
+func TestNormalizeEventPayload_NoReservedFormatKey(t *testing.T) {
+	// Apprise's accepted values for the reserved "format" field.
+	appriseFormats := map[string]bool{"text": true, "html": true, "markdown": true}
+
+	for _, event := range []string{EventBookImported, EventUpgrade} {
+		t.Run(event, func(t *testing.T) {
+			var gotBody []byte
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotBody, _ = io.ReadAll(r.Body)
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer srv.Close()
+
+			n := testNotifier(&http.Client{})
+			payload := normalizeEventPayload(event, map[string]interface{}{"title": "Dune", "format": "ebook"})
+			if err := n.send(context.Background(), &models.Notification{URL: srv.URL}, payload); err != nil {
+				t.Fatalf("send: %v", err)
+			}
+
+			var got map[string]interface{}
+			if err := json.Unmarshal(gotBody, &got); err != nil {
+				t.Fatalf("unmarshal sent body: %v (%s)", err, gotBody)
+			}
+			if f, ok := got["format"]; ok && !appriseFormats[fmt.Sprint(f)] {
+				t.Errorf("payload carries reserved key format=%v, which Apprise rejects with HTTP 400; want it under mediaFormat", f)
+			}
+			if got["mediaFormat"] != "ebook" {
+				t.Errorf("mediaFormat = %v, want %q", got["mediaFormat"], "ebook")
+			}
+			// The human-readable body still names the format.
+			if got["body"] != "Dune (ebook)" {
+				t.Errorf("body = %v, want %q", got["body"], "Dune (ebook)")
 			}
 		})
 	}

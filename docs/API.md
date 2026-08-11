@@ -161,7 +161,8 @@ without a custom template:
 | `message` | the subject, e.g. `The Way of Kings · Brandon Sanderson` |
 | `body` | alias of `message` (Apprise requires a `body` field) |
 | `item` | the raw release/book name (the title before it was moved into `message`) |
-| event extras | `author`, `format`, `size`, `path`, `status`, `clientId` when relevant |
+| `mediaFormat` | `ebook` \| `audiobook` on `bookImported` and `upgrade` — named `mediaFormat`, not `format`, because Apprise reserves `format` for the body markup and rejects any other value |
+| event extras | `author`, `size`, `path`, `status`, `clientId` when relevant |
 
 **ntfy:** set the notification's **topic** field and point the URL at the ntfy
 server root (e.g. `https://ntfy.sh`). Bindery then POSTs the JSON body with a
