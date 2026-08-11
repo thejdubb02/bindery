@@ -476,9 +476,25 @@ func (c *Client) bookSearchTiers(ctx context.Context, queryTitle, author string,
 		}
 	}
 
+	// Tier 4 is skipped once an earlier tier has already answered with something,
+	// even something the gate rejected. It is the broadest query in the ladder —
+	// title with no author at all — so after two more specific tiers have failed
+	// the gate it is the least likely to return anything better, and its results
+	// would lose to the fallback below anyway.
+	//
+	// This is what bounds the cost of the fix. Without it a cascade that used to
+	// stop at tier 2 with junk would run tiers 3 AND 4, two extra queries per
+	// spelling and BookSearch runs two spellings. With it the ceiling is one
+	// extra query, paid only on a search that was previously returning results
+	// filterRelevant would discard — a search that was already failing (#1814).
+	if len(fallback) > 0 {
+		slog.Debug("indexer query skipping tier 4; an earlier tier already returned results",
+			"count", len(fallback))
+		return fallback, nil
+	}
+
 	// Tier 4: title only. Nothing follows it, so its results stand even when the
-	// gate rejects them — unless an earlier tier left something behind, in which
-	// case that earlier set wins, exactly as it did before the gate existed.
+	// gate rejects them.
 	slog.Debug("indexer query tier 4 (title only)", "title", queryTitle)
 	results, ok, err := textTier(4, queryTitle)
 	if err != nil {

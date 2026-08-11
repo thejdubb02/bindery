@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1406,6 +1407,55 @@ func TestBookSearch_NoRelevantTierKeepsEarliestResults(t *testing.T) {
 	}
 	if results[0].Title != "Stephen.King.It.mp3" {
 		t.Errorf("unexpected fallback result %q", results[0].Title)
+	}
+}
+
+// TestBookSearch_JunkTierCostsAtMostOneExtraQuery pins the request ceiling the
+// relevance gate is allowed to spend.
+//
+// Applying the gate to tiers 2-4 means a cascade that used to stop at tier 2
+// with junk now continues. Left uncapped that is two extra queries per spelling,
+// and BookSearch runs two spellings — four extra round-trips on a search that
+// was already failing, which is the opposite of what #1814 is for. Tier 4 is
+// therefore skipped once any earlier tier has answered: it is the broadest query
+// in the ladder (title, no author) so it is the least likely to beat what the
+// more specific tiers just failed to produce, and its results would lose to the
+// fallback regardless.
+//
+// Before the gate this search cost 2 queries (tier 1, then tier 2 answering with
+// junk). The ceiling is 3.
+func TestBookSearch_JunkTierCostsAtMostOneExtraQuery(t *testing.T) {
+	var mu sync.Mutex
+	var queries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		mu.Lock()
+		queries = append(queries, q.Get("t")+":"+q.Get("q"))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/xml")
+		// Tier 2 answers with junk; every other tier is empty.
+		if q.Get("t") == "search" && q.Get("q") == "Lane Life Ascending" {
+			w.Write([]byte(junkFeedXML))
+			return
+		}
+		w.Write([]byte(emptyFeedXML))
+	}))
+	defer srv.Close()
+
+	c := testNew(srv.URL, "testkey")
+	if _, err := c.BookSearch(context.Background(), "Life Ascending", "Nick Lane", []int{7020}); err != nil {
+		t.Fatalf("BookSearch: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(queries) > 3 {
+		t.Fatalf("cascade issued %d queries, want at most 3 (tier 1, tier 2 junk, tier 3): %v", len(queries), queries)
+	}
+	for _, q := range queries {
+		if q == "search:Life Ascending" {
+			t.Errorf("tier 4 ran even though an earlier tier had already answered: %v", queries)
+		}
 	}
 }
 
