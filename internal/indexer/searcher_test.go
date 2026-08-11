@@ -980,15 +980,19 @@ func TestFilterCategoriesParentOptIn(t *testing.T) {
 	}{
 		{"existing ebook children", []int{7010, 7030, 7050}, "ebook", []int{7000, 7010, 7030, 7050}},
 		{"existing audiobook children", []int{3010, 3030, 3040}, "audiobook", []int{3000, 3010, 3030, 3040}},
-		{"ebook parent only", []int{7000}, "ebook", []int{7000}},
+		// Parent-only config still resolves the standard child alongside it —
+		// the fallback runs first, the opt-in prepends. The redundancy is
+		// harmless (7020 is inside 7000) and keeps the branch count down.
+		{"ebook parent only", []int{7000}, "ebook", []int{7000, 7020}},
 		{"ebook parent and children", []int{7000, 7020, 7030}, "ebook", []int{7000, 7020, 7030}},
 		{"ebook parent after child is not duplicated", []int{7020, 7000}, "ebook", []int{7000, 7020}},
-		{"audiobook parent only", []int{3000}, "audiobook", []int{3000}},
+		{"audiobook parent only", []int{3000}, "audiobook", []int{3000, 3030}},
 		{"audiobook parent and child", []int{3000, 3030}, "audiobook", []int{3000, 3030}},
 		{"ebook excludes audio parent", []int{3000, 7000, 7020}, "ebook", []int{7000, 7020}},
 		{"audiobook excludes books parent", []int{7000, 3000, 3030}, "audiobook", []int{3000, 3030}},
-		{"nonstandard categories retain parent opt-in", []int{100060}, "ebook", []int{7000, 100060}},
-		{"empty adds parent to fallback", nil, "ebook", []int{7000, 7020}},
+		// An indexer with no categories at all tells us nothing about what it
+		// carries, so the opt-in has nothing to widen — fallback only.
+		{"empty stays on the bare fallback", nil, "ebook", []int{7020}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1005,6 +1009,85 @@ func TestFilterCategoriesParentOptOutWithExistingChildren(t *testing.T) {
 	want := []int{7010, 7030, 7050}
 	if !slices.Equal(got, want) {
 		t.Errorf("filterCategoriesForMedia() = %v, want %v", got, want)
+	}
+}
+
+// The opt-in is a single boolean but it gates two parents, and the parent is
+// picked from the SEARCH's media type. Without a guard, a books-only indexer
+// that ticked a checkbox labelled "Books (7000) or Audio (3000)" would be sent
+// cat=3000 on every audiobook search and hand back that tracker's entire music
+// catalogue (and the mirror image for an audio-only indexer on ebook searches).
+// The parent is only ever added for a bucket the indexer actually lists
+// categories in.
+func TestFilterCategoriesParentOptInDoesNotCrossMediaTypes(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		cats      []int
+		mediaType string
+		want      []int
+	}{
+		{"books-only indexer, audiobook search", []int{7000, 7020}, "audiobook", []int{3030}},
+		{"books-only indexer, ebook search", []int{7000, 7020}, "ebook", []int{7000, 7020}},
+		{"audio-only indexer, ebook search", []int{3000, 3030}, "ebook", []int{7020}},
+		{"audio-only indexer, audiobook search", []int{3000, 3030}, "audiobook", []int{3000, 3030}},
+		{"dual indexer gets each parent on its own side", []int{7000, 7020, 3030}, "audiobook", []int{3000, 3030}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := filterCategoriesForMedia(tt.cats, tt.mediaType, true)
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("filterCategoriesForMedia(%v, %q, true) = %v, want %v", tt.cats, tt.mediaType, got, tt.want)
+			}
+		})
+	}
+}
+
+// Indexers with non-standard taxonomies (MaM's 100xxx tree) are passed through
+// untouched for the same reason the standard fallback IDs are not substituted
+// there: 7000 does not address that tree, so injecting it just adds a category
+// the indexer will either ignore or answer with unrelated releases. The opt-in
+// must not reach this path.
+func TestFilterCategoriesParentOptInSkipsNonStandardTaxonomy(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		cats      []int
+		mediaType string
+		want      []int
+	}{
+		{"MaM ebook", []int{100060}, "ebook", []int{100060}},
+		{"MaM ebook list", []int{100014, 100060, 100062}, "ebook", []int{100014, 100060, 100062}},
+		{"MaM audiobook", []int{100013, 100039}, "audiobook", []int{100013, 100039}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := filterCategoriesForMedia(tt.cats, tt.mediaType, true)
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("filterCategoriesForMedia(%v, %q, true) = %v, want %v", tt.cats, tt.mediaType, got, tt.want)
+			}
+		})
+	}
+}
+
+// The opted-OUT path must be byte-identical to what it was before the opt-in
+// existed. A mixed list — a standard parent plus a non-standard tree — has no
+// standard-range child, so it falls to the pass-through branch and both IDs go
+// out. Stripping the parent there would silently change every non-opted-in
+// mixed-taxonomy indexer.
+func TestFilterCategoriesParentOptOutKeepsMixedTaxonomy(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		cats      []int
+		mediaType string
+		want      []int
+	}{
+		{"books parent with MaM ebook tree", []int{7000, 100060}, "ebook", []int{7000, 100060}},
+		{"audio parent with MaM audiobook tree", []int{3000, 100013}, "audiobook", []int{3000, 100013}},
+		{"both parents on an ebook search", []int{7000, 3000, 100060}, "ebook", []int{7000, 3000, 100060}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := filterCategoriesForMedia(tt.cats, tt.mediaType, false)
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("filterCategoriesForMedia(%v, %q, false) = %v, want %v", tt.cats, tt.mediaType, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -1026,14 +1109,22 @@ func TestSearchBookUsesEachIndexersParentCategoryPreference(t *testing.T) {
 	defer enabledServer.Close()
 	disabledServer, disabledCats := newCaptureServer()
 	defer disabledServer.Close()
+	// Opted in, but carries only book categories. An audiobook search must not
+	// widen it into 3000 — see TestFilterCategoriesParentOptInDoesNotCrossMediaTypes.
+	booksOnlyServer, booksOnlyCats := newCaptureServer()
+	defer booksOnlyServer.Close()
 
 	searcher := newTestSearcher()
 	searcher.SearchBook(context.Background(), []models.Indexer{
 		{ID: 1, Name: "parent enabled", URL: enabledServer.URL, Categories: []int{7010, 7030, 7050}, IncludeParentCategories: true, Enabled: true},
 		{ID: 2, Name: "parent disabled", URL: disabledServer.URL, Categories: []int{7060}, IncludeParentCategories: false, Enabled: true},
 	}, MatchCriteria{Title: "Dune", Author: "Frank Herbert", MediaType: "ebook"})
+	searcher.SearchBook(context.Background(), []models.Indexer{
+		{ID: 3, Name: "books only, opted in", URL: booksOnlyServer.URL, Categories: []int{7000, 7020}, IncludeParentCategories: true, Enabled: true},
+	}, MatchCriteria{Title: "Dune", Author: "Frank Herbert", MediaType: "audiobook"})
 	close(enabledCats)
 	close(disabledCats)
+	close(booksOnlyCats)
 
 	assertAllCategories := func(name string, got <-chan string, want string) {
 		t.Helper()
@@ -1050,6 +1141,7 @@ func TestSearchBookUsesEachIndexersParentCategoryPreference(t *testing.T) {
 	}
 	assertAllCategories("enabled indexer", enabledCats, "7000,7010,7030,7050")
 	assertAllCategories("disabled indexer", disabledCats, "7060")
+	assertAllCategories("books-only indexer on an audiobook search", booksOnlyCats, "3030")
 }
 
 func TestIsAudiobookFormat(t *testing.T) {

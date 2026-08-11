@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -19,12 +18,6 @@ import (
 	"github.com/vavallee/bindery/internal/indexer/newznab"
 	"github.com/vavallee/bindery/internal/models"
 )
-
-type failingReader struct{}
-
-func (failingReader) Read([]byte) (int, error) {
-	return 0, errors.New("read failed")
-}
 
 // mockIndexerSearcher implements indexerSearcher for unit tests.
 type mockIndexerSearcher struct {
@@ -177,20 +170,11 @@ func TestIndexerUpdate_RequestBodyHandling(t *testing.T) {
 	h := indexerFixture(t)
 	idx := &models.Indexer{
 		Name: "Existing", URL: "https://example.com/api", Type: "newznab",
-		Categories: []int{7020}, IncludeParentCategories: true,
+		Categories: []int{7020}, IncludeParentCategories: true, FreeleechOnly: true,
 	}
 	if err := h.indexers.Create(context.Background(), idx); err != nil {
 		t.Fatalf("create fixture indexer: %v", err)
 	}
-
-	t.Run("read error", func(t *testing.T) {
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPut, "/indexer/1", failingReader{})
-		h.Update(rec, withURLParam(req, "id", strconv.FormatInt(idx.ID, 10)))
-		if rec.Code != http.StatusBadRequest {
-			t.Errorf("expected 400, got %d", rec.Code)
-		}
-	})
 
 	t.Run("malformed JSON", func(t *testing.T) {
 		rec := httptest.NewRecorder()
@@ -198,6 +182,30 @@ func TestIndexerUpdate_RequestBodyHandling(t *testing.T) {
 		h.Update(rec, withURLParam(req, "id", strconv.FormatInt(idx.ID, 10)))
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("expected 400, got %d", rec.Code)
+		}
+	})
+
+	// The handler decodes over a copy of the stored row, so a client that does
+	// not send a key leaves it alone. Decoding into a zero value instead turned
+	// every omitted boolean off — which is what happened to freeleechOnly for
+	// any integration written before that field existed.
+	t.Run("omitted booleans keep their stored value", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		body := `{"name":"Existing","url":"https://example.com/api","type":"newznab","categories":[7020]}`
+		req := httptest.NewRequest(http.MethodPut, "/indexer/1", bytes.NewBufferString(body))
+		h.Update(rec, withURLParam(req, "id", strconv.FormatInt(idx.ID, 10)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var updated models.Indexer
+		if err := json.NewDecoder(rec.Body).Decode(&updated); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if !updated.IncludeParentCategories {
+			t.Error("omitted includeParentCategories was reset to false")
+		}
+		if !updated.FreeleechOnly {
+			t.Error("omitted freeleechOnly was reset to false")
 		}
 	})
 

@@ -76,9 +76,7 @@ func (s *Syncer) Sync(ctx context.Context, instanceID int64) (SyncResult, error)
 		// ones disabled in Prowlarr, ones that don't support search, and
 		// ones with no ebook/audiobook categories. Users then deleted them
 		// manually and watched them reappear on the next sync.
-		ex, exists := byProwlarrID[ri.ProwlarrID]
-		includeParentCategories := exists && ex.IncludeParentCategories
-		cats := filterCategoriesForMedia(ri.Categories, includeParentCategories)
+		cats := filterCategoriesForMedia(ri.Categories)
 		switch {
 		case !ri.Enable:
 			slog.Debug("prowlarr sync: skipping disabled indexer",
@@ -100,7 +98,7 @@ func (s *Syncer) Sync(ctx context.Context, instanceID int64) (SyncResult, error)
 		instID := instanceID
 		idxType := indexerTypeForProtocol(ri.Protocol)
 
-		if exists {
+		if ex, ok := byProwlarrID[ri.ProwlarrID]; ok {
 			// Auto-populate the seed-ratio override from Prowlarr (#1065), but
 			// only on rows the user has not taken ownership of. An explicit
 			// user value/clear (source="user") always wins and is never touched;
@@ -193,14 +191,17 @@ func indexerTypeForProtocol(protocol string) string {
 
 // filterCategoriesForMedia normalises the Newznab category list at sync time.
 // Broad parent categories (7000 Other, 3000 Audio) are dropped when specific
-// children are already present unless the indexer has opted in to retaining
-// parents. When only the parent is present (no children) and opt-in is off,
+// children are already present. When only the parent is present (no children),
 // it is widened to its most useful specific child: 7000→7020 (Ebooks),
 // 3000→3030 (Audiobooks). All other categories pass through unchanged.
-func filterCategoriesForMedia(cats []int, includeParentCategories bool) []int {
-	if includeParentCategories {
-		return append([]int(nil), cats...)
-	}
+//
+// Indexer.IncludeParentCategories deliberately does NOT reach this function.
+// The opt-in is applied at search time by the indexer package, which decides
+// from the stored child categories whether the indexer serves the media type
+// being searched. Storing the parent as well would be a second, redundant
+// place for the option to change behaviour, and the search-time guard already
+// covers rows whose parent Prowlarr stripped.
+func filterCategoriesForMedia(cats []int) []int {
 	var has7000, has3000, hasChild7, hasChild3 bool
 	for _, c := range cats {
 		switch {

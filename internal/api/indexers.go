@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -183,29 +182,16 @@ func (h *IndexerHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
+	// Decode over a copy of the stored row rather than a zero value: JSON
+	// decoding only writes the keys the client actually sent, so an omitted
+	// field keeps whatever is on disk instead of being reset. Previously any
+	// client that did not know about a boolean — freeleechOnly, and now
+	// includeParentCategories — silently turned it off on every save.
+	// An explicitly sent false still disables it.
+	idx := *existing
+	if err := json.NewDecoder(r.Body).Decode(&idx); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
-	}
-	// Decode the model and presence-sensitive option together. The pointer
-	// distinguishes an omitted field from an explicit false without parsing the
-	// same JSON twice (whose second error path would be unreachable).
-	var update struct {
-		models.Indexer
-		IncludeParentCategories *bool `json:"includeParentCategories"`
-	}
-	if err := json.Unmarshal(body, &update); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
-		return
-	}
-	idx := update.Indexer
-	// Preserve the opt-in for older API clients that do not know about the new
-	// field. A present false still explicitly disables it.
-	if update.IncludeParentCategories == nil {
-		idx.IncludeParentCategories = existing.IncludeParentCategories
-	} else {
-		idx.IncludeParentCategories = *update.IncludeParentCategories
 	}
 	if idx.URL != "" {
 		if err := httpsec.ValidateOutboundURL(idx.URL, httpsec.PolicyLANLoopback); err != nil {

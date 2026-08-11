@@ -104,21 +104,19 @@ function FreeleechOnlyField({ value, onChange }: { value: boolean; onChange: (v:
   )
 }
 
+// ParentCategoriesField opts the indexer in to searching the broad Books /
+// Audio parent alongside its subcategories. It sits directly under Categories
+// because that is the list it widens, and mirrors FreeleechOnlyField's markup.
 function ParentCategoriesField({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
   const { t } = useTranslation()
   return (
-    <label className="flex items-start gap-2 text-xs text-slate-600 dark:text-zinc-400">
-      <input
-        type="checkbox"
-        checked={value}
-        onChange={e => onChange(e.target.checked)}
-        className="mt-0.5 accent-emerald-600 dark:accent-emerald-500"
-      />
-      <span>
-        <span className="block font-medium text-slate-700 dark:text-zinc-300">{t('settings.indexers.form.includeParentCategories')}</span>
-        <span className="block mt-1 text-slate-500 dark:text-zinc-500">{t('settings.indexers.form.includeParentCategoriesHint')}</span>
-      </span>
-    </label>
+    <div>
+      <label className="flex items-center gap-1.5 text-xs text-slate-600 dark:text-zinc-400">
+        <input type="checkbox" checked={value} onChange={e => onChange(e.target.checked)} className="accent-emerald-600 dark:accent-emerald-500" />
+        {t('settings.indexers.form.includeParentCategories')}
+      </label>
+      <p className="text-xs text-slate-500 dark:text-zinc-500 mt-1">{t('settings.indexers.form.includeParentCategoriesHint')}</p>
+    </div>
   )
 }
 
@@ -419,12 +417,12 @@ function EditIndexerForm({ indexer, onClose, onSaved }: { indexer: Indexer; onCl
         <input value={categories} onChange={e => setCategories(e.target.value)} placeholder={t('settings.indexers.form.categoriesPlaceholder')} className={inputCls} />
         <p className="text-xs text-slate-500 dark:text-zinc-500 mt-1">{t('settings.indexers.form.categoriesHint')}</p>
       </div>
+      <ParentCategoriesField value={includeParentCategories} onChange={setIncludeParentCategories} />
       <div>
         <label className={labelCls}>{t('settings.indexers.form.priority')}</label>
         <input type="number" value={priority} onChange={e => setPriority(e.target.value)} placeholder="0" className={inputCls} />
         <p className="text-xs text-slate-500 dark:text-zinc-500 mt-1">{t('settings.indexers.form.priorityHint')}</p>
       </div>
-      <ParentCategoriesField value={includeParentCategories} onChange={setIncludeParentCategories} />
       <SeedRatioField value={seedRatio} onChange={setSeedRatio} source={indexer.seedRatioSource} />
       <FreeleechOnlyField value={freeleechOnly} onChange={setFreeleechOnly} />
       {testResult && <IndexerTestResultBanner r={testResult} />}
@@ -499,12 +497,12 @@ function AddIndexerForm({ onClose, onAdded }: { onClose: () => void; onAdded: (i
         <input value={categories} onChange={e => setCategories(e.target.value)} placeholder={t('settings.indexers.form.categoriesPlaceholder')} className={inputCls} />
         <p className="text-xs text-slate-500 dark:text-zinc-500 mt-1">{t('settings.indexers.form.categoriesHint')}</p>
       </div>
+      <ParentCategoriesField value={includeParentCategories} onChange={setIncludeParentCategories} />
       <div>
         <label className={labelCls}>{t('settings.indexers.form.priority')}</label>
         <input type="number" value={priority} onChange={e => setPriority(e.target.value)} placeholder="0" className={inputCls} />
         <p className="text-xs text-slate-500 dark:text-zinc-500 mt-1">{t('settings.indexers.form.priorityHint')}</p>
       </div>
-      <ParentCategoriesField value={includeParentCategories} onChange={setIncludeParentCategories} />
       <SeedRatioField value={seedRatio} onChange={setSeedRatio} />
       <FreeleechOnlyField value={freeleechOnly} onChange={setFreeleechOnly} />
       {testResult && <IndexerTestResultBanner r={testResult} />}

@@ -105,7 +105,7 @@ func TestFilterCategoriesForMedia(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := filterCategoriesForMedia(tc.in, false)
+			got := filterCategoriesForMedia(tc.in)
 			if len(got) != len(tc.want) {
 				t.Errorf("filterCategoriesForMedia(%v) = %v, want %v", tc.in, got, tc.want)
 				return
@@ -119,24 +119,10 @@ func TestFilterCategoriesForMedia(t *testing.T) {
 	}
 }
 
-func TestFilterCategoriesForMedia_ParentOptIn(t *testing.T) {
-	tests := []struct {
-		in, want []int
-	}{
-		{[]int{7000}, []int{7000}},
-		{[]int{7000, 7020, 7030}, []int{7000, 7020, 7030}},
-		{[]int{3000}, []int{3000}},
-		{[]int{3000, 3030}, []int{3000, 3030}},
-		{[]int{7020, 100060}, []int{7020, 100060}},
-	}
-	for _, tt := range tests {
-		got := filterCategoriesForMedia(tt.in, true)
-		if !intSliceEqual(got, tt.want) {
-			t.Errorf("filterCategoriesForMedia(%v, true) = %v, want %v", tt.in, got, tt.want)
-		}
-	}
-}
-
+// The opt-in lives only on the Bindery row; a sync refreshes categories from
+// Prowlarr and must leave the boolean alone. Categories still get the usual
+// parent-stripping — the searcher re-derives the parent at query time from the
+// children that survive here, so the stored list stays the normalised one.
 func TestSyncer_PreservesParentCategoryChoiceAndUpdatesCategories(t *testing.T) {
 	pID := 10
 	instID := int64(1)
@@ -158,7 +144,7 @@ func TestSyncer_PreservesParentCategoryChoiceAndUpdatesCategories(t *testing.T) 
 	if !store.updated[0].IncludeParentCategories {
 		t.Fatal("IncludeParentCategories was overwritten during sync")
 	}
-	if want := []int{7000, 7020, 7030}; !intSliceEqual(store.updated[0].Categories, want) {
+	if want := []int{7020, 7030}; !intSliceEqual(store.updated[0].Categories, want) {
 		t.Errorf("Categories = %v, want %v", store.updated[0].Categories, want)
 	}
 }

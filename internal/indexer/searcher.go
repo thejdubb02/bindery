@@ -151,16 +151,33 @@ func (s *Searcher) makeClient(baseURL, apiKey string) *newznab.Client {
 // indexers returns unrelated results because the standard IDs do not cover
 // the indexer's extended subcategory tree.
 //
-// When includeParentCategories is true, the media-specific parent is prepended
-// even if it is absent from cats. Existing indexers may not have the parent
-// stored because Prowlarr sync historically removed it.
+// When includeParentCategories is true (the per-indexer opt-in for trackers
+// that file releases loosely under the parent), the media-specific parent is
+// prepended even if it is absent from cats — existing rows may not have it
+// stored because Prowlarr sync strips it. Two guards keep the opt-in from
+// widening a search into a bucket the indexer does not serve:
+//
+//   - The parent is only added when the indexer carries at least one category
+//     in that thousand. A books-only indexer opted in must not receive 3000 on
+//     an audiobook search, or it returns its entire music surface.
+//   - The parent is never added on the non-standard-taxonomy path. Injecting
+//     7000 into a MaM-style indexer is the same mistake as substituting 7020
+//     there: the standard ID does not address the extended subcategory tree.
+//
+// Note the interaction with the query cascade: BookSearch tiers 2-4 return on
+// ANY result, before filterRelevant runs. Broadening the category list can make
+// an early text tier come back with junk, stop the ladder, and then have
+// filterRelevant discard all of it — leaving an opted-in indexer with fewer
+// good results than a narrow list would have produced. Confining the opt-in to
+// the structured tier-1 t=book query is the real fix; it is a follow-up, not
+// done here.
 func filterCategoriesForMedia(cats []int, mediaType string, includeParentCategories bool) []int {
 	// Newznab category convention: 7xxx is the Books parent (7020 ebook,
 	// 7030 magazines), 3xxx is Audio (3030 audiobook). The bare parents
 	// (7000 / 3000) are dropped by default: Prowlarr reports them for generic
-	// trackers and sending them as-is returns the entire books or audio surface.
-	// A per-indexer opt-in adds the relevant parent after filtering so it also
-	// works for existing rows from which Prowlarr sync previously removed it.
+	// book trackers and sending them as-is returns the entire books or audio
+	// surface, which is noise. The per-indexer opt-in adds the relevant parent
+	// back after filtering, subject to the guards above.
 	//
 	// Beyond that, every non-parent subcategory in the matching bucket is
 	// trusted: the user explicitly added it to the indexer's category list
@@ -179,15 +196,21 @@ func filterCategoriesForMedia(cats []int, mediaType string, includeParentCategor
 		parent = 3000
 		fallback = []int{3030}
 	}
+	if len(cats) == 0 {
+		return fallback
+	}
 	var out []int
 	hasNonStandard := false
-	hasParent := false
+	// carriesMedia records whether the indexer lists anything at all in the
+	// requested media's thousand — the parent itself counts. It gates the
+	// opt-in so the parent is only ever sent to an indexer that serves it.
+	carriesMedia := false
 	for _, c := range cats {
-		if c == parent {
-			hasParent = true
-		}
-		if c/1000 == wantThousand && c != parent {
-			out = append(out, c)
+		if c/1000 == wantThousand {
+			carriesMedia = true
+			if c != parent {
+				out = append(out, c)
+			}
 		}
 		if c > 9999 {
 			hasNonStandard = true
@@ -195,18 +218,12 @@ func filterCategoriesForMedia(cats []int, mediaType string, includeParentCategor
 	}
 	if len(out) == 0 {
 		if hasNonStandard {
-			for _, c := range cats {
-				if c != parent {
-					out = append(out, c)
-				}
-			}
-		} else if includeParentCategories && hasParent {
-			return []int{parent}
-		} else {
-			out = append([]int(nil), fallback...)
+			// Non-standard taxonomy: pass through untouched, opt-in included.
+			return cats
 		}
+		out = append([]int(nil), fallback...)
 	}
-	if includeParentCategories {
+	if includeParentCategories && carriesMedia {
 		out = append([]int{parent}, out...)
 	}
 	return out
