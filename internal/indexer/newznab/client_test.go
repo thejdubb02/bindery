@@ -1307,6 +1307,108 @@ func TestBookSearch_Tier1FallsBackOnCannedFeed(t *testing.T) {
 	}
 }
 
+// emptyFeedXML is a well-formed newznab response carrying no items.
+const emptyFeedXML = `<?xml version="1.0"?><rss xmlns:newznab="http://www.newznab.com/DTD/2010/feeds/attributes/"><channel><newznab:response total="0"/></channel></rss>`
+
+// junkFeedXML is a populated response with nothing to do with "Life Ascending"
+// — the shape a broad category query (#1571) returns from a tracker that files
+// releases loosely.
+const junkFeedXML = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2010/feeds/attributes/">
+  <channel>
+    <newznab:response offset="0" total="2"/>
+    <item><title>Stephen.King.It.mp3</title><guid isPermaLink="true">junk-1</guid>
+      <enclosure url="https://example.com/junk-1" length="1" type="application/x-nzb"/>
+    </item>
+    <item><title>Neil.Gaiman.Good.Omens.epub</title><guid isPermaLink="true">junk-2</guid>
+      <enclosure url="https://example.com/junk-2" length="1" type="application/x-nzb"/>
+    </item>
+  </channel>
+</rss>`
+
+// TestBookSearch_IrrelevantTextTierFallsThrough covers #1891: tiers 2-4 used to
+// short-circuit on len(results) > 0, so a text tier answering with junk stopped
+// the cascade and the downstream filterRelevant then threw all of it away —
+// leaving the search empty even though a later, more specific tier had the
+// book. Tier 2 here returns junk and tier 3 the real release, so the tier-3 hit
+// must win.
+func TestBookSearch_IrrelevantTextTierFallsThrough(t *testing.T) {
+	var queries []url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.Query())
+		w.Header().Set("Content-Type", "application/xml")
+		q := r.URL.Query()
+		switch {
+		// Tier 2: q="Lane Life Ascending" — irrelevant results.
+		case q.Get("t") == "search" && q.Get("q") == "Lane Life Ascending":
+			w.Write([]byte(junkFeedXML))
+		// Tier 3: q="Nick Lane Life Ascending" — the book itself.
+		case q.Get("t") == "search" && q.Get("q") == "Nick Lane Life Ascending":
+			w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2010/feeds/attributes/">
+  <channel>
+    <newznab:response offset="0" total="1"/>
+    <item><title>Nick.Lane.Life.Ascending.epub</title><guid isPermaLink="true">relevant-1</guid>
+      <enclosure url="https://example.com/relevant-1" length="1" type="application/x-nzb"/>
+    </item>
+  </channel>
+</rss>`))
+		default:
+			w.Write([]byte(emptyFeedXML))
+		}
+	}))
+	defer srv.Close()
+
+	c := testNew(srv.URL, "testkey")
+	results, err := c.BookSearch(context.Background(), "Life Ascending", "Nick Lane", []int{7020})
+	if err != nil {
+		t.Fatalf("BookSearch: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected the tier-3 result, got %d results: %+v", len(results), results)
+	}
+	if results[0].Title != "Nick.Lane.Life.Ascending.epub" {
+		t.Errorf("irrelevant tier-2 results won the cascade: got %q", results[0].Title)
+	}
+	// A relevant tier still stops the ladder where it always did: tier 1 +
+	// tier 2 + tier 3, with no tier-4 query (#1814 — request volume matters).
+	if len(queries) != 3 {
+		t.Errorf("expected exactly 3 queries (tiers 1-3), got %d: %v", len(queries), queries)
+	}
+}
+
+// TestBookSearch_NoRelevantTierKeepsEarliestResults pins the other half of
+// #1891: the relevance gate may only promote a later tier over an earlier one,
+// never lose results. When no tier looks relevant — including the case where
+// titleHasRelevantResult is stricter than the downstream filterRelevant — the
+// earliest tier that returned anything is still what comes back, which is what
+// the cascade returned before the gate existed.
+func TestBookSearch_NoRelevantTierKeepsEarliestResults(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		q := r.URL.Query()
+		// Only tier 2 answers, and with junk; tiers 3 and 4 are empty.
+		if q.Get("t") == "search" && q.Get("q") == "Lane Life Ascending" {
+			w.Write([]byte(junkFeedXML))
+			return
+		}
+		w.Write([]byte(emptyFeedXML))
+	}))
+	defer srv.Close()
+
+	c := testNew(srv.URL, "testkey")
+	results, err := c.BookSearch(context.Background(), "Life Ascending", "Nick Lane", []int{7020})
+	if err != nil {
+		t.Fatalf("BookSearch: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected the tier-2 results to survive as the fallback, got %d", len(results))
+	}
+	if results[0].Title != "Stephen.King.It.mp3" {
+		t.Errorf("unexpected fallback result %q", results[0].Title)
+	}
+}
+
 // TestNew_HardenedDialerAllowsLoopback verifies that the http.Client returned by
 // New() uses the httpsec-hardened DialContext under PolicyLANLoopback, which
 // PERMITS loopback. Indexer URLs are admin-typed infrastructure, and running an
