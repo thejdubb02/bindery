@@ -41,10 +41,12 @@ fine. The setting that controls the sync cadence is `hardcover.sync_interval`.
 
 **Cover images must be self-hosted.** The API Rules permit hot-linking
 Hardcover's images from a personal project but prohibit it for a professional
-one: "download those images and host them on your own." Bindery's web UI already
-does this by routing every cover through `/api/v1/images`, which fetches once
-and caches to `<dataDir>/image-cache/`. The OPDS feed does **not** yet do it and
-still emits Hardcover URLs directly to reading apps.
+one: "download those images and host them on your own." Bindery does this on
+both surfaces: the web UI routes covers through `/api/v1/images` and the OPDS
+feed through `/opds/images`, which are the same handler and the same
+`<dataDir>/image-cache/`. Reading apps and browsers alike fetch covers from
+your instance, and Hardcover is contacted once per cover per 30-day cache
+entry.
 
 > The Hardcover Terms of Service page is unedited template boilerplate whose
 > governing-law, arbitration, and liability clauses are literal blanks, and
