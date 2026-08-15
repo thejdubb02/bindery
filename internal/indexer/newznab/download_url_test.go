@@ -49,6 +49,16 @@ func TestSignDownloadURLFor(t *testing.T) {
 	}
 }
 
+func TestIsDownloadURLFor(t *testing.T) {
+	const indexerURL = "https://idx.example.com/api"
+	if !IsDownloadURLFor("https://idx.example.com/dl?id=abc", indexerURL) {
+		t.Fatal("expected same-host download URL to match")
+	}
+	if IsDownloadURLFor("https://cdn.other.net/file.nzb", indexerURL) {
+		t.Fatal("foreign download URL must not match")
+	}
+}
+
 // The client redacts a signed URL for the response, and the grab handler
 // restores exactly the original signed URL — the round trip a real grab makes.
 func TestRedactThenReSign_RoundTrips(t *testing.T) {

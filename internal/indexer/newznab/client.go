@@ -178,11 +178,29 @@ func signDownloadURL(raw, baseHost, apiKey string) string {
 // the indexer is returned untouched (never signed with a foreign host). Passing
 // an already-signed URL is a no-op.
 func SignDownloadURLFor(rawURL, indexerURL, apiKey string) string {
-	baseHost := ""
-	if u, err := url.Parse(normalizeEndpointURL(indexerURL)); err == nil {
-		baseHost = strings.ToLower(u.Host)
-	}
+	baseHost := indexerHost(indexerURL)
 	return signDownloadURL(rawURL, baseHost, apiKey)
+}
+
+// IsDownloadURLFor reports whether rawURL targets the configured indexer's
+// host. It uses the same normalized-host comparison as SignDownloadURLFor, so
+// callers can recover an omitted indexer ID without ever matching a
+// direct-from-uploader URL to an unrelated indexer.
+func IsDownloadURLFor(rawURL, indexerURL string) bool {
+	baseHost := indexerHost(indexerURL)
+	if baseHost == "" {
+		return false
+	}
+	u, err := url.Parse(rawURL)
+	return err == nil && strings.EqualFold(u.Host, baseHost)
+}
+
+func indexerHost(indexerURL string) string {
+	u, err := url.Parse(normalizeEndpointURL(indexerURL))
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(u.Host)
 }
 
 // RedactDownloadURL removes the apikey query parameter from a download URL so it

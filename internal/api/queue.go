@@ -857,15 +857,14 @@ func (h *QueueHandler) grab(ctx context.Context, req grabRequest) (*models.Downl
 		}
 	}
 	// Re-attach the indexer apikey the search/queue responses strip out
-	// (SEC: the shared credential must not reach non-admin clients). The client
-	// hands back an apikey-less download URL plus the indexer id; sign it
-	// server-side here. No-op when the URL already carries a key (scheduler /
-	// retry paths) or its host does not match the indexer.
+	// (SEC: the shared credential must not reach non-admin clients). Most
+	// callers send the indexer ID, but API clients may only have the redacted
+	// URL returned by search. Recover that ID by exact host match when it is
+	// absent or stale; never sign a direct-from-uploader URL.
 	nzbURL := req.NZBURL
-	if indexerID != nil && h.indexers != nil {
-		if idx, err := h.indexers.GetByID(ctx, *indexerID); err == nil && idx != nil {
-			nzbURL = newznab.SignDownloadURLFor(req.NZBURL, idx.URL, idx.APIKey)
-		}
+	if idx, resolvedID := h.indexerForDownloadURL(ctx, indexerID, req.NZBURL); idx != nil {
+		indexerID = resolvedID
+		nzbURL = newznab.SignDownloadURLFor(req.NZBURL, idx.URL, idx.APIKey)
 	}
 	dl := &models.Download{
 		GUID:             req.GUID,
@@ -941,6 +940,32 @@ func (h *QueueHandler) grab(ctx context.Context, req grabRequest) (*models.Downl
 		h.notif.Send(ctx, notifier.EventGrabbed, map[string]any{"title": req.Title, "size": req.Size})
 	}
 	return dl, nil
+}
+
+// indexerForDownloadURL resolves an explicitly supplied indexer ID first. If
+// it is absent or refers to a deleted indexer, it falls back to matching the
+// download URL's host against configured indexers. This restores redacted URLs
+// returned by search without trusting a client to provide a database ID.
+func (h *QueueHandler) indexerForDownloadURL(ctx context.Context, id *int64, rawURL string) (*models.Indexer, *int64) {
+	if h.indexers == nil {
+		return nil, id
+	}
+	if id != nil {
+		idx, err := h.indexers.GetByID(ctx, *id)
+		if err == nil && idx != nil {
+			return idx, id
+		}
+	}
+	indexers, err := h.indexers.List(ctx)
+	if err != nil {
+		return nil, id
+	}
+	for i := range indexers {
+		if newznab.IsDownloadURLFor(rawURL, indexers[i].URL) {
+			return &indexers[i], &indexers[i].ID
+		}
+	}
+	return nil, id
 }
 
 // recordHistory is a helper to write a history event, swallowing errors.

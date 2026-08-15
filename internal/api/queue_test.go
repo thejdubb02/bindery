@@ -68,6 +68,64 @@ func TestQueueGrab_NoDownloadClient(t *testing.T) {
 	}
 }
 
+// TestQueueGrab_SignsDownloadURLWithoutIndexerID covers API consumers that
+// replay the redacted URL returned from search without carrying indexerId.
+// A stale ID must recover in the same way, since deleted indexers can leave
+// old clients with an ID that no longer resolves.
+func TestQueueGrab_SignsDownloadURLWithoutIndexerID(t *testing.T) {
+	defer httpsec.AllowLoopbackForTests()()
+	indexerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("apikey") != "indexer-secret" {
+			http.Error(w, "missing indexer credential", http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?><nzb></nzb>`))
+	}))
+	defer indexerSrv.Close()
+
+	sabSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("mode") != "addfile" {
+			t.Fatalf("expected SAB addfile request, got %q", r.URL.Query().Get("mode"))
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": true, "nzo_ids": []string{"nzo-signed"}})
+	}))
+	defer sabSrv.Close()
+
+	for name, indexerID := range map[string]string{
+		"missing": "",
+		"stale":   `,"indexerId":999`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			h, database, downloads, clients, _, ctx := queueFixture(t)
+			indexers := db.NewIndexerRepo(database)
+			idx := &models.Indexer{Name: "Prowlarr", Type: "newznab", URL: indexerSrv.URL + "/api", APIKey: "indexer-secret", Categories: []int{7000}, Enabled: true, SupportsSearch: true}
+			if err := indexers.Create(ctx, idx); err != nil {
+				t.Fatalf("create indexer: %v", err)
+			}
+			h.WithIndexers(indexers)
+
+			host, port := testServerHostPort(t, sabSrv.URL)
+			if err := clients.Create(ctx, &models.DownloadClient{Name: "sab", Type: "sabnzbd", Host: host, Port: port, Enabled: true}); err != nil {
+				t.Fatalf("create download client: %v", err)
+			}
+
+			body := fmt.Sprintf(`{"guid":"sign-%s","nzbUrl":"%s/download?link=release","title":"Signed release"%s}`, name, indexerSrv.URL, indexerID)
+			rec := httptest.NewRecorder()
+			h.Grab(rec, httptest.NewRequest(http.MethodPost, "/api/v1/queue/grab", bytes.NewBufferString(body)))
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+			}
+			dl, err := downloads.GetByGUID(ctx, "sign-"+name)
+			if err != nil || dl == nil {
+				t.Fatalf("load download: %v", err)
+			}
+			if dl.IndexerID == nil || *dl.IndexerID != idx.ID {
+				t.Fatalf("expected recovered indexer ID %d, got %v", idx.ID, dl.IndexerID)
+			}
+		})
+	}
+}
+
 // TestQueueGrab_ProtocolMismatchNamesUsenet verifies the actionable error when
 // a usenet (NZB) release is grabbed but the user's only enabled client is a
 // torrent client. The message must name the missing protocol (usenet) AND tell
