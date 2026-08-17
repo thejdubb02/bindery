@@ -368,7 +368,8 @@ func (h *BulkHandler) fanOutSearches(books []models.Book) {
 // BooksBulk handles POST /api/v1/book/bulk.
 //
 // Supported actions: "monitor", "unmonitor", "delete", "search", "set_media_type", "exclude".
-// For "set_media_type" the body must also include "mediaType": "ebook"|"audiobook".
+// For "set_media_type" the body must also include "mediaType":
+// "ebook"|"audiobook"|"both".
 // "exclude" sets the book's excluded flag to true so it disappears from author
 // lists and is blocked from re-import on the next OL sync — mirrors the
 // single-book PUT /book/:id/exclude path but skips the toggle semantics
