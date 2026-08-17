@@ -317,6 +317,9 @@ func TestAuthorsBulk_SetMonitorMode(t *testing.T) {
 func TestAuthorsBulk_SetMonitorNewItems(t *testing.T) {
 	h, authors, _, author, ctx := bulkFixture(t)
 
+	// The fixture author starts on the defaults (mode "all", new items "all"),
+	// so both assertions below are real transitions rather than no-ops.
+	author.MonitorMode = models.AuthorMonitorModeAll
 	author.MonitorNewItems = models.AuthorMonitorNewItemsAll
 	if err := authors.Update(ctx, author); err != nil {
 		t.Fatal(err)

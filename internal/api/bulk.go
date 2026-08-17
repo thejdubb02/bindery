@@ -568,6 +568,8 @@ func (h *BulkHandler) setAuthorMonitorMode(ctx context.Context, id int64, mode s
 		author.MonitorLatestCount = *latestCount
 	}
 	if newItems != nil {
+		// Already validated at the request boundary for the only current
+		// caller; kept so a future one can't write an unvalidated value.
 		if !models.IsAuthorMonitorNewItemsValid(*newItems) {
 			return fmt.Errorf("monitorNewItems must be 'all' or 'none'")
 		}
