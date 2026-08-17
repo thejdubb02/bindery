@@ -246,6 +246,16 @@ func TestRemoveBookDirScoped(t *testing.T) {
 			kept:   []string{"Other Book.m4b", "cover.jpg"},
 		},
 		{
+			// The guard must hold on the whole-book/author-delete path too,
+			// where sweepMatchesFormat matches everything.
+			name:   "an unscoped delete still leaves another book's file alone",
+			files:  []string{"Book.epub", "Book.m4b", "Other Book.m4b", "cover.jpg"},
+			format: "",
+			owned:  map[string]bool{"Other Book.m4b": true},
+			gone:   []string{"Book.epub", "Book.m4b"},
+			kept:   []string{"Other Book.m4b", "cover.jpg"},
+		},
+		{
 			name:   "an unknown format filter removes nothing",
 			files:  []string{"Book.m4b", "Book.epub"},
 			format: "graphicnovel",
