@@ -2,6 +2,9 @@ package downloader
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -117,4 +120,54 @@ func TestRefreshDownloadClientHealthAsync_CoversEveryEnabledType(t *testing.T) {
 	if store.Get(3) != nil {
 		t.Error("a disabled client was probed")
 	}
+}
+
+// TestCheckDownloadClientHealth_NzbgetMapsVisibilityToHealth exercises the two
+// verdicts that matter for #2029: an NZBGet client whose completed directory
+// Bindery can read reports OK, and one it cannot read reports an error rather
+// than the fabricated green every non-qBittorrent type used to store.
+func TestCheckDownloadClientHealth_NzbgetMapsVisibilityToHealth(t *testing.T) {
+	visible := t.TempDir()
+
+	newServer := func(destDir string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body := readBody(t, r)
+			if strings.Contains(body, `"version"`) {
+				_, _ = w.Write([]byte(`{"version":"1.1","result":"21.0"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"version":"1.1","result":[` +
+				`{"Name":"MainDir","Value":"` + visible + `"},` +
+				`{"Name":"DestDir","Value":"` + destDir + `"},` +
+				`{"Name":"Category1.Name","Value":"books"}` +
+				`]}`))
+		}))
+	}
+
+	t.Run("readable completed dir reports OK", func(t *testing.T) {
+		srv := newServer("${MainDir}")
+		defer srv.Close()
+		host, port := serverHostPort(t, srv.URL)
+		client := &models.DownloadClient{Type: "nzbget", Host: host, Port: port, Category: "books"}
+
+		got := CheckDownloadClientHealth(context.Background(), client, "/downloads", "", "")
+		if got.Status != HealthOK {
+			t.Fatalf("status = %q, want %q (message: %s)", got.Status, HealthOK, got.Message)
+		}
+	})
+
+	t.Run("unreadable completed dir reports an error", func(t *testing.T) {
+		srv := newServer(filepath.Join(visible, "nope"))
+		defer srv.Close()
+		host, port := serverHostPort(t, srv.URL)
+		client := &models.DownloadClient{Type: "nzbget", Host: host, Port: port, Category: "books"}
+
+		got := CheckDownloadClientHealth(context.Background(), client, "/downloads", "", "")
+		if got.Status != HealthError {
+			t.Fatalf("status = %q, want %q (message: %s)", got.Status, HealthError, got.Message)
+		}
+		if got.Message == "" {
+			t.Error("an error verdict carried no message for the operator to act on")
+		}
+	})
 }
