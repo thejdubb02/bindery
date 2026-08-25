@@ -100,6 +100,21 @@ func TestQueryHTTPErrorClassification(t *testing.T) {
 			want:        []string{"token rejected", "HTTP 403", "Token lacks the required scope"},
 		},
 		{
+			name:        "403 naming a token but rejecting nothing is not a token problem",
+			status:      http.StatusForbidden,
+			contentType: "application/json",
+			body:        `{"error":"rate_limited","error_description":"Token bucket exhausted, retry after 30s"}`,
+			want:        []string{"HTTP 403", "Token bucket exhausted"},
+			notWant:     []string{"token rejected"},
+		},
+		{
+			name:        "403 for an unauthenticated request is a token problem",
+			status:      http.StatusForbidden,
+			contentType: "application/json",
+			body:        `{"error":"Unable to verify token"}`,
+			want:        []string{"token rejected", "HTTP 403", "Unable to verify token"},
+		},
+		{
 			name:        "500 with an HTML error page",
 			status:      http.StatusInternalServerError,
 			contentType: "text/html; charset=utf-8",

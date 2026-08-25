@@ -699,7 +699,22 @@ func isTokenRejection(status int, envelope hcErrorEnvelope, parsed bool) bool {
 	case "invalid_token", "invalid_request", "invalid_grant", "unauthorized", "access_denied", "insufficient_scope":
 		return true
 	}
-	return strings.Contains(strings.ToLower(envelope.detail()), "token")
+	// Unknown 403 codes still count when the text names the credential *and*
+	// rejects it, which is how Hardcover phrases an unauthenticated request
+	// ({"error":"Unable to verify token"}). Naming the token is not enough on
+	// its own: "Token bucket exhausted, retry after 30s" is a rate limit, and
+	// telling the operator to reissue a working token would send them the
+	// wrong way.
+	detail := strings.ToLower(envelope.detail())
+	if !strings.Contains(detail, "token") {
+		return false
+	}
+	for _, rejection := range []string{"invalid", "expired", "unable to verify", "not associated", "unauthori", "forbidden", "revoked", "missing"} {
+		if strings.Contains(detail, rejection) {
+			return true
+		}
+	}
+	return false
 }
 
 // sanitizeErrorDetail makes upstream text safe to quote back: secrets redacted,
