@@ -360,10 +360,16 @@ type UserOwnedRows struct {
 	Blocklist int `json:"blocklist"`
 }
 
-// Total reports how many rows in all counted tables belong to the user.
+// Total reports how many rows the admin has to decide about. Blocklist is
+// deliberately excluded: its attribution is cleared the same way under either
+// strategy, so there is no decision to make, and counting it pushed a user
+// whose only data was blocklist entries into a strategy dialog that then
+// rendered an empty resource list and asked them to choose what happens to a
+// library that does not exist. Blocklist is still reported in the 409 body for
+// transparency; it just does not gate the delete.
 func (c UserOwnedRows) Total() int {
 	return c.Authors + c.Books + c.QualityProfiles + c.MetadataProfiles +
-		c.Downloads + c.RootFolders + c.ImportLists + c.Blocklist
+		c.Downloads + c.RootFolders + c.ImportLists
 }
 
 // OwnedRows counts every row that references the user. A zero Total means the

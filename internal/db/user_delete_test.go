@@ -275,3 +275,37 @@ func TestUserDelete_KeepsBlocklistEntriesButDropsAttribution(t *testing.T) {
 		t.Errorf("%d blocklist row(s) still attributed to the deleted user", attributed)
 	}
 }
+
+// TestUserOwnedRows_BlocklistAloneIsNotADecision guards the gate the API puts
+// in front of an admin. Blocklist attribution is cleared identically under both
+// strategies, so a user whose only trace is blocklist entries owns nothing to
+// decide about. Counting it in Total() produced a 409 whose resource list was
+// empty, asking the admin to choose what happens to a library that does not
+// exist. The count itself is still reported, it just does not gate the delete.
+func TestUserOwnedRows_BlocklistAloneIsNotADecision(t *testing.T) {
+	users, _, database, _, victimID, _ := newDeleteFixture(t)
+	ctx := context.Background()
+
+	// Strip the fixture's owned rows so the blocklist is all that remains.
+	for _, table := range ownerTables {
+		if _, err := database.Exec("UPDATE "+table+" SET owner_user_id = NULL WHERE owner_user_id = ?", victimID); err != nil {
+			t.Fatalf("clear %s: %v", table, err)
+		}
+	}
+	if _, err := database.Exec(
+		"INSERT INTO blocklist (guid, title, created_by_user_id) VALUES ('guid-solo', 'Bad Release', ?)", victimID,
+	); err != nil {
+		t.Fatalf("seed blocklist: %v", err)
+	}
+
+	counts, err := users.OwnedRows(ctx, victimID)
+	if err != nil {
+		t.Fatalf("owned rows: %v", err)
+	}
+	if counts.Blocklist != 1 {
+		t.Errorf("blocklist = %d, want 1 — the count is still reported", counts.Blocklist)
+	}
+	if counts.Total() != 0 {
+		t.Errorf("total = %d, want 0 — a blocklist entry is not ownership: %+v", counts.Total(), counts)
+	}
+}
