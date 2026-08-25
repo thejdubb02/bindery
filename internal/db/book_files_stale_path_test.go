@@ -197,3 +197,124 @@ func TestBookColumns_FallsBackToBookFilesRow(t *testing.T) {
 			got.EbookFilePath)
 	}
 }
+
+func TestBookFilePathResolves(t *testing.T) {
+	root := t.TempDir()
+	present := writeFileAt(t, filepath.Join(root, "Neuromancer.epub"))
+
+	cases := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{"a file that exists", present, true},
+		{"a directory that exists", root, true},
+		{"a path that does not exist", filepath.Join(root, "gone.epub"), false},
+		{"the empty path", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := BookFilePathResolves(tc.path); got != tc.want {
+				t.Errorf("BookFilePathResolves(%q) = %v, want %v", tc.path, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestMultiFileBookPaths_OnlyBooksWithSameFormatSiblings pins the sweep's
+// candidate query: it must find the book that owns two rows of one format and
+// skip the book whose two rows are one of each.
+func TestMultiFileBookPaths_OnlyBooksWithSameFormatSiblings(t *testing.T) {
+	database, author, single := openTestDB(t)
+	ctx := context.Background()
+	repo := NewBookRepo(database)
+
+	dual := &models.Book{
+		ForeignID: "OL88888W", AuthorID: author.ID, Title: "Dual", SortTitle: "Dual",
+		Monitored: true, Status: models.BookStatusWanted, MediaType: models.MediaTypeBoth,
+	}
+	if err := repo.Create(ctx, dual); err != nil {
+		t.Fatalf("create dual book: %v", err)
+	}
+
+	root := t.TempDir()
+	// One book with two ebooks: a candidate.
+	epub := writeFileAt(t, filepath.Join(root, "Neuromancer.epub"))
+	mobi := writeFileAt(t, filepath.Join(root, "Neuromancer.mobi"))
+	if err := repo.AddBookFile(ctx, single.ID, models.MediaTypeEbook, epub); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.AddBookFile(ctx, single.ID, models.MediaTypeEbook, mobi); err != nil {
+		t.Fatal(err)
+	}
+	// One book with an ebook and an audiobook: not a candidate, because
+	// neither format has a sibling that could have outranked it.
+	other := writeFileAt(t, filepath.Join(root, "Dual.epub"))
+	audio := writeFileAt(t, filepath.Join(root, "Dual.m4b"))
+	if err := repo.AddBookFile(ctx, dual.ID, models.MediaTypeEbook, other); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.AddBookFile(ctx, dual.ID, models.MediaTypeAudiobook, audio); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := repo.MultiFileBookPaths(ctx)
+	if err != nil {
+		t.Fatalf("MultiFileBookPaths: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 candidate, got %d (%+v)", len(got), got)
+	}
+	if got[0].BookID != single.ID {
+		t.Errorf("candidate BookID = %d, want %d", got[0].BookID, single.ID)
+	}
+	if got[0].EbookPath != epub {
+		t.Errorf("candidate EbookPath = %q, want %q", got[0].EbookPath, epub)
+	}
+	if got[0].AudiobookPath != "" {
+		t.Errorf("candidate AudiobookPath = %q, want empty", got[0].AudiobookPath)
+	}
+}
+
+// TestRefreshBookStatus_ExportedEntryPointRederivesPaths covers the entry point
+// the library scan's sweep calls: no file is registered or removed, the rows
+// are untouched, and the book still moves onto the one that resolves.
+func TestRefreshBookStatus_ExportedEntryPointRederivesPaths(t *testing.T) {
+	database, _, book := openTestDB(t)
+	ctx := context.Background()
+	repo := NewBookRepo(database)
+
+	root := t.TempDir()
+	first := writeFileAt(t, filepath.Join(root, "Old", "Neuromancer.epub"))
+	second := writeFileAt(t, filepath.Join(root, "New", "Neuromancer.epub"))
+	if err := repo.AddBookFile(ctx, book.ID, models.MediaTypeEbook, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.AddBookFile(ctx, book.ID, models.MediaTypeEbook, second); err != nil {
+		t.Fatal(err)
+	}
+	// Both resolved at registration, so the older row won. That is the state a
+	// library broken before this fix is left in.
+	before, err := repo.GetByID(ctx, book.ID)
+	if err != nil || before == nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if before.EbookFilePath != first {
+		t.Fatalf("fixture: EbookFilePath = %q, want %q", before.EbookFilePath, first)
+	}
+
+	if err := os.RemoveAll(filepath.Join(root, "Old")); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.RefreshBookStatus(ctx, book.ID); err != nil {
+		t.Fatalf("RefreshBookStatus: %v", err)
+	}
+
+	after, err := repo.GetByID(ctx, book.ID)
+	if err != nil || after == nil {
+		t.Fatalf("GetByID after refresh: %v", err)
+	}
+	if after.EbookFilePath != second {
+		t.Errorf("EbookFilePath = %q, want the live path %q", after.EbookFilePath, second)
+	}
+}

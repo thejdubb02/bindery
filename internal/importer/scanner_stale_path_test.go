@@ -7,6 +7,7 @@ package importer
 // is what makes a rescan correct it.
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -118,4 +119,17 @@ func TestScanLibrary_LeavesHealthyMultiFileBookAlone(t *testing.T) {
 	if after.EbookFilePath != epub {
 		t.Errorf("EbookFilePath after scan = %q, want the unchanged %q", after.EbookFilePath, epub)
 	}
+}
+
+// TestRefreshStaleRenderedPaths_SurvivesAFailedLookup: the sweep runs after the
+// scan has already done its real work, so a database error there has to be
+// logged and swallowed rather than taken as a scan failure.
+func TestRefreshStaleRenderedPaths_SurvivesAFailedLookup(t *testing.T) {
+	s, _, _, _, _, ctx := trackedPathsFixture(t)
+
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+
+	// Must not panic and must return: the candidate query fails outright.
+	s.refreshStaleRenderedPaths(cancelled)
 }
