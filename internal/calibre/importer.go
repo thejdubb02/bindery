@@ -704,6 +704,12 @@ func aliasBindsAuthor(alias models.AuthorAlias, canonical *models.Author) bool {
 	if strings.TrimSpace(alias.SourceOLID) != "" {
 		return true
 	}
+	// FuzzyAuto and not just Exact: punctuation and spacing variants of one
+	// name are the whole point of an alias table, and an exact-only test would
+	// reject "RR Haywood" against "R.R. Haywood". Including it costs nothing
+	// here because the tier covers near-typos of the same name, and a
+	// co-author's name is not a near-typo of the person they wrote with, which
+	// is the shape this function has to refuse.
 	if kind := textutil.MatchAuthorName(alias.Name, canonical.Name).Kind; kind == textutil.AuthorMatchExact || kind == textutil.AuthorMatchFuzzyAuto {
 		return true
 	}
