@@ -265,11 +265,7 @@
     "clients": {
       "heading": "Mga Download Client",
       "addButton": "+ Magdagdag ng Client",
-      "empty": "Walang naka-configure na download client. Magdagdag ng SABnzbd para paganahin ang mga download.",
-      "passwordEditLabel": "Password (leave blank to keep current)",
-      "apiKeyEditLabel": "API Key (leave blank to keep current)",
-      "credentialKeepHint": "Bindery no longer sends a saved password or API key back to the browser. Leave this blank to keep the one already stored.",
-      "credentialUnsetHint": "No credential is stored for this client yet."
+      "empty": "Walang naka-configure na download client. Magdagdag ng SABnzbd para paganahin ang mga download."
     },
     "notifications": {
       "heading": "Mga Webhook Notification",
