@@ -3341,7 +3341,7 @@ func TestRelinkUpstream_ManualCandidateRejectsUnverifiedFallback(t *testing.T) {
 // syncs from the other provider forever. The fallback used to be silent; the
 // response must now name both providers so the UI can surface it.
 func TestCreateAuthor_StampsProviderMismatch(t *testing.T) {
-	newHandler := func(t *testing.T) *AuthorHandler {
+	newHandler := func(t *testing.T) (*AuthorHandler, *db.AuthorRepo) {
 		t.Helper()
 		database, err := db.OpenMemory()
 		if err != nil {
@@ -3370,10 +3370,11 @@ func TestCreateAuthor_StampsProviderMismatch(t *testing.T) {
 				},
 			},
 		}
-		return NewAuthorHandler(db.NewAuthorRepo(database), db.NewAuthorAliasRepo(database), db.NewBookRepo(database), nil, metadata.NewAggregator(primary, enricher), nil, db.NewMetadataProfileRepo(database), nil)
+		authorRepo := db.NewAuthorRepo(database)
+		return NewAuthorHandler(authorRepo, db.NewAuthorAliasRepo(database), db.NewBookRepo(database), nil, metadata.NewAggregator(primary, enricher), nil, db.NewMetadataProfileRepo(database), nil), authorRepo
 	}
 
-	create := func(t *testing.T, h *AuthorHandler, foreignID, name string) map[string]any {
+	create := func(t *testing.T, h *AuthorHandler, foreignID, name string, wantStatus int) map[string]any {
 		t.Helper()
 		body, _ := json.Marshal(map[string]any{
 			"foreignAuthorId": foreignID,
@@ -3384,8 +3385,8 @@ func TestCreateAuthor_StampsProviderMismatch(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 		h.Create(rec, req)
-		if rec.Code != http.StatusCreated {
-			t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+		if rec.Code != wantStatus {
+			t.Fatalf("expected %d, got %d: %s", wantStatus, rec.Code, rec.Body.String())
 		}
 		var resp map[string]any
 		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
@@ -3394,8 +3395,8 @@ func TestCreateAuthor_StampsProviderMismatch(t *testing.T) {
 		return resp
 	}
 
-	t.Run("openlibrary record under hardcover primary is flagged", func(t *testing.T) {
-		resp := create(t, newHandler(t), "OL999A", "John Roe")
+	requireMismatch := func(t *testing.T, resp map[string]any) {
+		t.Helper()
 		mismatch, ok := resp["providerMismatch"].(map[string]any)
 		if !ok {
 			t.Fatalf("providerMismatch missing from response: %v", resp)
@@ -3403,12 +3404,54 @@ func TestCreateAuthor_StampsProviderMismatch(t *testing.T) {
 		if mismatch["primaryProvider"] != "hardcover" || mismatch["linkedProvider"] != "openlibrary" {
 			t.Fatalf("providerMismatch = %v, want hardcover/openlibrary", mismatch)
 		}
+	}
+
+	t.Run("openlibrary record under hardcover primary is flagged", func(t *testing.T) {
+		h, _ := newHandler(t)
+		requireMismatch(t, create(t, h, "OL999A", "John Roe", http.StatusCreated))
 	})
 
 	t.Run("hardcover record under hardcover primary is not flagged", func(t *testing.T) {
-		resp := create(t, newHandler(t), "hc:jane-doe", "Jane Doe")
+		h, _ := newHandler(t)
+		resp := create(t, h, "hc:jane-doe", "Jane Doe", http.StatusCreated)
 		if _, ok := resp["providerMismatch"]; ok {
 			t.Fatalf("unexpected providerMismatch in response: %v", resp)
+		}
+	})
+
+	// The add flow's other success path: the name matches an existing
+	// relinkable local author (abs:/calibre: import), so Create relinks it to
+	// the fetched record and returns 200 instead of 201. The stamp must ride
+	// that response too.
+	t.Run("relinked canonical author under hardcover primary is flagged", func(t *testing.T) {
+		h, authorRepo := newHandler(t)
+		local := &models.Author{
+			ForeignID:        "abs:author:john-roe",
+			Name:             "John Roe",
+			SortName:         "Roe, John",
+			MetadataProvider: "audiobookshelf",
+			Monitored:        true,
+		}
+		if err := authorRepo.Create(context.Background(), local); err != nil {
+			t.Fatalf("seed local author: %v", err)
+		}
+		requireMismatch(t, create(t, h, "OL999A", "John Roe", http.StatusOK))
+	})
+
+	// Defensive guards: a nil author, a handler without an aggregator, and an
+	// aggregator without a wired primary must all leave the record unstamped.
+	t.Run("guards leave the author unstamped", func(t *testing.T) {
+		noMeta := &AuthorHandler{}
+		noMeta.stampProviderMismatch(nil)
+		author := &models.Author{ForeignID: "OL999A"}
+		noMeta.stampProviderMismatch(author)
+		if author.ProviderMismatch != nil {
+			t.Fatalf("nil-aggregator handler stamped the author: %+v", author.ProviderMismatch)
+		}
+		noPrimary := &AuthorHandler{meta: metadata.NewAggregator(nil)}
+		noPrimary.stampProviderMismatch(author)
+		if author.ProviderMismatch != nil {
+			t.Fatalf("primaryless aggregator stamped the author: %+v", author.ProviderMismatch)
 		}
 	})
 }
