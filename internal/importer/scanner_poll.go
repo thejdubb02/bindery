@@ -1164,7 +1164,15 @@ func rollbackPlacedFiles(destDir string, names []string) {
 			slog.Warn("could not roll back a partially placed audiobook file", "dir", destDir, "name", n, "error", err)
 		}
 	}
-	if err := os.Remove(destDir); err != nil && !os.IsNotExist(err) {
+	// destDir itself goes the same way, through a root on its parent, so both
+	// removals in this function are kernel-scoped rather than trusted.
+	parent, err := os.OpenRoot(filepath.Dir(destDir))
+	if err != nil {
+		slog.Warn("could not open the audiobook destination's parent to remove it", "path", destDir, "error", err)
+		return
+	}
+	defer func() { _ = parent.Close() }()
+	if err := parent.Remove(filepath.Base(destDir)); err != nil && !os.IsNotExist(err) {
 		slog.Warn("could not remove the partially placed audiobook folder", "path", destDir, "error", err)
 	}
 }
