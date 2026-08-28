@@ -507,14 +507,14 @@ func (s *Scanner) dropPlaceAudiobook(ctx context.Context, downloadPath string, b
 		}
 		placed := make([]string, 0, len(bookFiles))
 		for _, f := range bookFiles {
-			dst := filepath.Join(destDir, filepath.Base(f))
-			if err := dropPlaceFile(ctx, f, dst, linkMode); err != nil {
+			name := filepath.Base(f)
+			if err := dropPlaceFile(ctx, f, filepath.Join(destDir, name), linkMode); err != nil {
 				// Drop handoff never moves, so every source is still in the
 				// download directory and undoing this attempt is safe.
-				rollbackPlacedFiles(placed, destDir)
+				rollbackPlacedFiles(destDir, placed)
 				return err
 			}
-			placed = append(placed, dst)
+			placed = append(placed, name)
 		}
 		return nil
 	}

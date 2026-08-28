@@ -1481,6 +1481,8 @@ func (s *Scanner) tryImportInternal(ctx context.Context, dl *models.Download, do
 			if err := os.MkdirAll(destDir, 0o750); err != nil {
 				dirErr = fmt.Errorf("create audiobook dest dir: %w", err)
 			} else {
+				// Basenames rather than full paths: rollbackPlacedFiles
+				// removes them through an os.Root opened on destDir.
 				placed := make([]string, 0, len(bookFiles))
 				for _, srcFile := range bookFiles {
 					dstFile := filepath.Join(destDir, filepath.Base(srcFile))
@@ -1497,7 +1499,7 @@ func (s *Scanner) tryImportInternal(ctx context.Context, dl *models.Download, do
 						dirErr = fileErr
 						break
 					}
-					placed = append(placed, dstFile)
+					placed = append(placed, filepath.Base(srcFile))
 				}
 				// An unexpected placement failure (a full disk, a revoked
 				// permission) used to leave the already-placed files behind
@@ -1511,7 +1513,7 @@ func (s *Scanner) tryImportInternal(ctx context.Context, dl *models.Download, do
 						slog.Warn("audiobook move failed partway; placed files left in place because their sources are already gone",
 							"dst", destDir, "placed", len(placed))
 					} else {
-						rollbackPlacedFiles(placed, destDir)
+						rollbackPlacedFiles(destDir, placed)
 					}
 				}
 			}

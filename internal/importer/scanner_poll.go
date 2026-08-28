@@ -1136,7 +1136,13 @@ func checkPerFileCollisions(destDir string, bookFiles []string) error {
 }
 
 // rollbackPlacedFiles removes the files a failed per-file placement attempt
-// created, then removes destDir if that leaves it empty.
+// created inside destDir, then removes destDir if that leaves it empty.
+//
+// names are basenames within destDir, and the removals go through an os.Root
+// opened on destDir, so the kernel scopes them: a name that tried to escape
+// (or a symlink placed under destDir mid-import) is rejected there rather than
+// by a user-space check that can race. Same reasoning as copyDirContext and
+// hardlinkDirRooted, which use os.Root for the write side of the same paths.
 //
 // Safe only for copy and hardlink, where every source file is still in the
 // download directory and the placed copies are redundant. Callers must NOT
@@ -1146,14 +1152,20 @@ func checkPerFileCollisions(destDir string, bookFiles []string) error {
 //
 // os.Remove (not RemoveAll) on destDir deliberately: it fails harmlessly if
 // anything unexpected is in there, so nothing outside this attempt is touched.
-func rollbackPlacedFiles(placed []string, destDir string) {
-	for _, p := range placed {
-		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
-			slog.Warn("could not roll back partially placed audiobook file", "path", p, "error", err)
+func rollbackPlacedFiles(destDir string, names []string) {
+	root, err := os.OpenRoot(destDir)
+	if err != nil {
+		slog.Warn("could not open the audiobook destination to roll it back", "path", destDir, "error", err)
+		return
+	}
+	defer func() { _ = root.Close() }()
+	for _, n := range names {
+		if err := root.Remove(n); err != nil && !os.IsNotExist(err) {
+			slog.Warn("could not roll back a partially placed audiobook file", "dir", destDir, "name", n, "error", err)
 		}
 	}
 	if err := os.Remove(destDir); err != nil && !os.IsNotExist(err) {
-		slog.Warn("could not remove partially placed audiobook folder", "path", destDir, "error", err)
+		slog.Warn("could not remove the partially placed audiobook folder", "path", destDir, "error", err)
 	}
 }
 
