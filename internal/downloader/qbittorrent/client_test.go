@@ -597,6 +597,80 @@ func TestAddTorrent_FailsBody(t *testing.T) {
 	}
 }
 
+// TestAddTorrent_EmptyBody200_Magnet covers rdt-client and the other
+// qBittorrent-API emulators, which accept a torrent with HTTP 200 and no
+// response body where qBittorrent writes "Ok." (#2304). Reading that as a
+// failure marked every grab failed while the download ran to completion in
+// the client and was never imported. The magnet supplies the infohash, so no
+// hash poll is needed.
+func TestAddTorrent_EmptyBody200_Magnet(t *testing.T) {
+	const magnetHash = "dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v2/auth/login":
+			_, _ = w.Write([]byte("Ok."))
+		case "/api/v2/torrents/add":
+			w.WriteHeader(http.StatusOK) // no body, as rdt-client answers
+		}
+	}))
+	defer srv.Close()
+
+	c := newTestClient(srv.URL, "admin", "pass")
+	c.loggedIn = true
+
+	got, err := c.AddTorrent(context.Background(), "magnet:?xt=urn:btih:"+magnetHash, "bindery", "")
+	if err != nil {
+		t.Fatalf("empty 200 body must be accepted: %v", err)
+	}
+	if got != magnetHash {
+		t.Errorf("hash: want %q, got %q", magnetHash, got)
+	}
+}
+
+// TestAddTorrent_EmptyBody200_TorrentFile is the shape the #2304 reporter
+// actually hit: a private tracker behind Jackett, so Bindery uploads the
+// .torrent rather than passing a magnet, and the infohash can only come from
+// the post-add poll. The empty body must not short-circuit that.
+func TestAddTorrent_EmptyBody200_TorrentFile(t *testing.T) {
+	const polledHash = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+
+	added := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v2/auth/login":
+			_, _ = w.Write([]byte("Ok."))
+		case "/api/v2/torrents/add":
+			added = true
+			w.WriteHeader(http.StatusOK) // no body
+		case "/api/v2/torrents/info":
+			if !added {
+				_, _ = w.Write([]byte(`[]`))
+				return
+			}
+			_, _ = w.Write([]byte(`[{"hash":"` + polledHash + `","name":"x","added_on":1}]`))
+		case "/api/v2/torrents/setCategory", "/api/v2/torrents/setAutoManagement":
+			_, _ = w.Write([]byte("Ok."))
+		}
+	}))
+	defer srv.Close()
+
+	indexer := newFakeIndexer(t)
+	defer indexer.Close()
+
+	c := newTestClient(srv.URL, "admin", "pass")
+	allowTorrentFetch(c)
+	c.loggedIn = true
+
+	got, err := c.AddTorrent(context.Background(), indexer.URL+"/torrent", "bindery", "")
+	if err != nil {
+		t.Fatalf("empty 200 body must be accepted for a .torrent upload: %v", err)
+	}
+	if got != polledHash {
+		t.Errorf("hash from post-add poll: want %q, got %q", polledHash, got)
+	}
+}
+
 func TestAddTorrent_HTTPError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

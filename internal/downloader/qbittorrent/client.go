@@ -410,12 +410,21 @@ func (c *Client) AddTorrent(ctx context.Context, magnetOrURL, category, savePath
 		return "", fmt.Errorf("add torrent HTTP %d: %s", resp.StatusCode, text)
 	}
 
-	// qBittorrent v4.x: plaintext body "Ok." on success, anything else is failure.
-	// qBittorrent v5.x: JSON body {"added_torrent_ids":[...],"success_count":N,...}.
-	// Accept either shape; on v5 prefer added_torrent_ids[0] as the infohash so we
-	// can skip the hash-poll fallback when the API already returned the hash.
+	// Three accepted success shapes on a 200:
+	//   qBittorrent v4.x: plaintext body "Ok."
+	//   qBittorrent v5.x: JSON {"added_torrent_ids":[...],"success_count":N,...}
+	//   API emulators:    no body at all
+	// On v5 prefer added_torrent_ids[0] as the infohash so we can skip the
+	// hash-poll fallback when the API already returned the hash.
+	//
+	// The empty case is rdt-client and friends, which accept the torrent and
+	// write nothing where qBittorrent writes "Ok." (#2304). Treating that as a
+	// failure marked every grab failed while the download completed and sat
+	// there unimported. qBittorrent signals a rejection with a NON-empty body
+	// ("Fails."), so an empty body carries no rejection signal to lose, which
+	// is why Sonarr and Radarr read it the same way.
 	v5Hash := ""
-	if text != "Ok." {
+	if text != "" && text != "Ok." {
 		var v5 struct {
 			AddedTorrentIDs []string `json:"added_torrent_ids"`
 			SuccessCount    int      `json:"success_count"`
